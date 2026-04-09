@@ -45,9 +45,6 @@ cJSON* activeTrackers = 0;
 cJSON* PreviousPosition = 0;
 cJSON* lastPublishedTracker = 0;
 cJSON* PathCache = 0;
-cJSON* occupancyDetectionCounter = 0;
-cJSON* classCounterArrays = 0;
-cJSON* previousOccupancy = 0;
 int lastDetectionListWasEmpty = 0;
 int publishEvents = 1;
 int publishDetections = 1;
@@ -62,16 +59,29 @@ int mqttConnected = 0;
 static guint image_noon_timer_id = 0;
 int shouldReset = 0;
 
-#define MAX_OCCUPANCY_HISTORY 64  // Adjust if your max burst rate is super high
+/* ── Multi-area occupancy ─────────────────────────────────────────── */
+#define MAX_AREAS         8
+#define MAX_POLY_VERTICES 32
 
 typedef struct {
-    double timestamp_ms; ///< in seconds (use e.g. gettimeofday or monotonic)
-    cJSON* counter;   ///< cJSON object: { "Human":3, "Car":5, ... }
-} OccupancySample;
+    int    id;
+    int    active;
+    char   name[64];
+    int    polygon_count;
+    int    poly_x[MAX_POLY_VERTICES];
+    int    poly_y[MAX_POLY_VERTICES];
+    cJSON* last_published;   /* full counter last sent  { "Human":1, "Car":0, … } */
+    cJSON* pending_counter;  /* pending decrease (NULL = none)                     */
+    double decrease_due_at;  /* monotonic timestamp when pending fires              */
+} OccupancyArea;
 
-OccupancySample occupancy_history[MAX_OCCUPANCY_HISTORY];
-int occupancy_history_start = 0;
-int occupancy_history_count = 0;
+static OccupancyArea g_areas[MAX_AREAS];
+static int           g_area_count = 0;
+
+/* Whole-frame fallback state (used when no areas are defined) */
+static cJSON*  g_fallback_last    = NULL;
+static cJSON*  g_fallback_pending = NULL;
+static double  g_fallback_due     = 0.0;
 
 
 cJSON* ProcessPaths(cJSON* tracker) {
@@ -670,181 +680,303 @@ void Publish_Path( cJSON* path ){
 	cJSON_Delete(path);
 }
 
-static cJSON* last_occupancy = NULL;
+/* ── Occupancy helpers ────────────────────────────────────────────── */
 
-int Check_Counters_Equal(cJSON* counter1, cJSON* counter2) {
-    if (counter1 == NULL && counter2 == NULL)
-        return 1;
-    if (counter1 == NULL || counter2 == NULL)
-        return 0;
-    if (cJSON_GetArraySize(counter1) != cJSON_GetArraySize(counter2))
-        return 0;
-    cJSON *item = counter1->child;
-    while (item) {
-        cJSON* other = cJSON_GetObjectItem(counter2, item->string);
-        if (!other)
-            return 0;
-        if (item->valuedouble != other->valuedouble)
-            return 0;
-        item = item->next;
+/*
+ * Standard ray-casting point-in-polygon test.
+ * Coordinates are in the 0-1000 canvas space used by the detection pipeline.
+ */
+static int point_in_polygon(int px, int py, int* xs, int* ys, int n) {
+    int inside = 0;
+    for (int i = 0, j = n - 1; i < n; j = i++) {
+        int xi = xs[i], yi = ys[i];
+        int xj = xs[j], yj = ys[j];
+        if (((yi > py) != (yj > py)) &&
+            (px < (xj - xi) * (py - yi) / (yj - yi) + xi))
+            inside = !inside;
     }
-    item = counter2->child;
-    while (item) {
-        cJSON* other = cJSON_GetObjectItem(counter1, item->string);
-        if (!other)
-            return 0;
-        if (item->valuedouble != other->valuedouble)
-            return 0;
-        item = item->next;
-    }
-    return 1;
+    return inside;
 }
 
-static void push_occupancy_sample(double timestamp_ms, cJSON* counter) {
-    // Remove oldest if buffer is full
-    if (occupancy_history_count == MAX_OCCUPANCY_HISTORY) {
-        cJSON_Delete(occupancy_history[occupancy_history_start].counter);
-        occupancy_history_start = (occupancy_history_start + 1) % MAX_OCCUPANCY_HISTORY;
-        occupancy_history_count--;
-    }
-    int idx = (occupancy_history_start + occupancy_history_count) % MAX_OCCUPANCY_HISTORY;
-    occupancy_history[idx].timestamp_ms = timestamp_ms;
-    occupancy_history[idx].counter = cJSON_Duplicate(counter, 1);
-    occupancy_history_count++;
-}
+/*
+ * Build a raw per-label counter from the tracker list.
+ * Every label in `labels` is present in the result (value may be 0).
+ * If poly_n >= 3, only detections whose COG is inside the polygon are counted.
+ */
+static cJSON* build_raw_counter(cJSON* list, cJSON* labels,
+                                int stationary, int moving,
+                                double ageThreshold, double idleThreshold,
+                                int* poly_x, int* poly_y, int poly_n) {
+    cJSON* counter = cJSON_CreateObject();
+    /* Initialise all labels to 0 */
+    for (cJSON* lbl = labels ? labels->child : NULL; lbl; lbl = lbl->next)
+        if (lbl->valuestring)
+            cJSON_AddNumberToObject(counter, lbl->valuestring, 0);
 
-static void push_occupancy_zero_sample(double timestamp_ms) {
-    cJSON* empty = cJSON_CreateObject();
-    push_occupancy_sample(timestamp_ms, empty);
-    cJSON_Delete(empty);
-}
-
-cJSON*
-compute_stabilized_occupancy(double now, double integration_time) {
-    // Remove outdated entries
-    while (occupancy_history_count > 0 &&
-           occupancy_history[occupancy_history_start].timestamp_ms < now - integration_time) {
-        cJSON_Delete(occupancy_history[occupancy_history_start].counter);
-        occupancy_history_start = (occupancy_history_start + 1) % MAX_OCCUPANCY_HISTORY;
-        occupancy_history_count--;
-    }
-    // Aggregate all counters
-    cJSON* result = cJSON_CreateObject();
-    int n = 0;
-    for (int i = 0, idx = occupancy_history_start; i < occupancy_history_count; ++i, idx = (idx + 1) % MAX_OCCUPANCY_HISTORY) {
-        cJSON* counter = occupancy_history[idx].counter;
-        cJSON* item = counter->child;
-        while (item) {
-            cJSON* sum = cJSON_GetObjectItem(result, item->string);
-            if (sum) {
-                sum->valuedouble += item->valuedouble;
-                sum->valueint = (int)sum->valuedouble;
-            } else {
-                cJSON_AddNumberToObject(result, item->string, item->valuedouble);
-            }
-            item = item->next;
-        }
-        n++;
-    }
-    // Average for each class
-    cJSON* item = result->child;
-    while (item) {
-        if (n > 0) item->valuedouble /= n;
-        item->valueint = (int)(item->valuedouble + 0.5); // Round
-        item = item->next;
-    }
-    return result;
-}
-
-cJSON* ProcessOccupancy(cJSON* list) {
-    cJSON* settings = ACAP_Get_Config("settings");
-    if (!settings)
-        return 0;
-    cJSON* occupancy = cJSON_GetObjectItem(settings, "occupancy");
-    if (!occupancy)
-        return 0;
-    int stationary = cJSON_GetObjectItem(occupancy, "stationary") ? cJSON_GetObjectItem(occupancy, "stationary")->type == cJSON_True : 0;
-    int moving = cJSON_GetObjectItem(occupancy, "moving") ? cJSON_GetObjectItem(occupancy, "moving")->type == cJSON_True : 0;
-    double ageThreshold = cJSON_GetObjectItem(occupancy, "ageThreshold") ? cJSON_GetObjectItem(occupancy, "ageThreshold")->valuedouble : 2.0;
-    double idleThreshold = cJSON_GetObjectItem(occupancy, "idleThreshold") ? cJSON_GetObjectItem(occupancy, "idleThreshold")->valuedouble : 3.0;
     int listSize = cJSON_GetArraySize(list);
-
-    // Handle empty list: only broadcast on change (normalized empty object)
-    if (listSize == 0) {
-        cJSON* empty = cJSON_CreateObject();
-        int changed = 1;
-        if (last_occupancy && Check_Counters_Equal(last_occupancy, empty))
-            changed = 0;
-        if (!changed) {
-            cJSON_Delete(empty);
-            return 0;
-        }
-        // Only add to history and report on change
-        double now = ACAP_DEVICE_Timestamp();
-        push_occupancy_zero_sample(now);
-        if (last_occupancy)
-            cJSON_Delete(last_occupancy);
-        last_occupancy = cJSON_Duplicate(empty, 1);
-        return empty;
-    }
-
-    // Build counters object (class counts)
-    cJSON* counters = cJSON_CreateObject();
-    for (int i = 0; i < listSize; ++i) {
+    for (int i = 0; i < listSize; i++) {
         cJSON* det = cJSON_GetArrayItem(list, i);
         if (!det) continue;
-        cJSON* clsItem = cJSON_GetObjectItem(det, "class");
-        cJSON* ageItem_o = cJSON_GetObjectItem(det, "age");
-        cJSON* idleItem_o = cJSON_GetObjectItem(det, "idle");
-        if (!clsItem || !clsItem->valuestring || !ageItem_o || !idleItem_o) continue;
-        const char* cls = clsItem->valuestring;
-        double age = ageItem_o->valuedouble;
-        double idle = idleItem_o->valuedouble;
-        int is_moving = (age >= ageThreshold) && (idle < idleThreshold);
+        cJSON* clsItem  = cJSON_GetObjectItem(det, "class");
+        cJSON* ageItem  = cJSON_GetObjectItem(det, "age");
+        cJSON* idleItem = cJSON_GetObjectItem(det, "idle");
+        cJSON* cxItem   = cJSON_GetObjectItem(det, "cx");
+        cJSON* cyItem   = cJSON_GetObjectItem(det, "cy");
+        if (!clsItem || !clsItem->valuestring || !ageItem || !idleItem) continue;
+
+        /* Polygon filter (COG must be inside) */
+        if (poly_n >= 3) {
+            if (!cxItem || !cyItem) continue;
+            if (!point_in_polygon(cxItem->valueint, cyItem->valueint,
+                                  poly_x, poly_y, poly_n))
+                continue;
+        }
+
+        double age  = ageItem->valuedouble;
+        double idle = idleItem->valuedouble;
+        int is_moving     = (age >= ageThreshold) && (idle < idleThreshold);
         int is_stationary = (age >= ageThreshold) && (idle >= idleThreshold);
-        if ((moving && is_moving) || (stationary && is_stationary)) {
-            cJSON* curr = cJSON_GetObjectItem(counters, cls);
-            if (curr) {
-                curr->valuedouble += 1.0;
-            } else {
-                cJSON_AddNumberToObject(counters, cls, 1.0);
+        if (!((moving && is_moving) || (stationary && is_stationary)))
+            continue;
+
+        /* Only count labels that are in our allowed set */
+        cJSON* curr = cJSON_GetObjectItem(counter, clsItem->valuestring);
+        if (curr)
+            curr->valuedouble += 1.0;
+    }
+    return counter;
+}
+
+/*
+ * Hold-down debounce logic shared by areas and the whole-frame fallback.
+ *
+ * Increases are published immediately.
+ * Decreases are held for `holdTime` seconds before publishing.
+ * If counts recover within holdTime the pending decrease is cancelled.
+ *
+ * Returns a pointer to the counter that should be published, or NULL.
+ * The returned pointer is `*p_last` (owned by the caller state).
+ */
+static cJSON* apply_hold_down(cJSON* raw, double now, double holdTime,
+                               cJSON** p_last, cJSON** p_pending, double* p_due) {
+    int has_increase = 0, has_decrease = 0;
+
+    if (*p_last) {
+        for (cJSON* item = raw->child; item; item = item->next) {
+            cJSON* prev = cJSON_GetObjectItem(*p_last, item->string);
+            double pv = prev ? prev->valuedouble : 0.0;
+            if (item->valuedouble > pv) has_increase = 1;
+            if (item->valuedouble < pv) has_decrease = 1;
+        }
+    } else {
+        for (cJSON* item = raw->child; item; item = item->next)
+            if (item->valuedouble > 0) { has_increase = 1; break; }
+    }
+
+    if (has_increase) {
+        /* Immediate publish — cancel any pending decrease */
+        if (*p_pending) { cJSON_Delete(*p_pending); *p_pending = NULL; }
+        if (*p_last) cJSON_Delete(*p_last);
+        *p_last = cJSON_Duplicate(raw, 1);
+        return *p_last;
+    }
+
+    if (!has_decrease) {
+        /* Nothing changed vs last_published.
+         * If a pending decrease was armed but raw has fully recovered, cancel it. */
+        if (*p_pending && *p_last) {
+            int recovered = 1;
+            for (cJSON* item = raw->child; item; item = item->next) {
+                cJSON* prev = cJSON_GetObjectItem(*p_last, item->string);
+                if (item->valuedouble < (prev ? prev->valuedouble : 0.0))
+                    { recovered = 0; break; }
             }
+            if (recovered) { cJSON_Delete(*p_pending); *p_pending = NULL; }
+        }
+        /* Check if a previously armed pending has matured */
+        if (*p_pending && now >= *p_due) {
+            if (*p_last) cJSON_Delete(*p_last);
+            *p_last = *p_pending;
+            *p_pending = NULL;
+            return *p_last;
+        }
+        return NULL;
+    }
+
+    /* Pure decrease (or decrease with no increase) — arm / refresh hold-down */
+    if (*p_pending) {
+        cJSON_Delete(*p_pending);           /* refresh to latest raw */
+        *p_pending = cJSON_Duplicate(raw, 1);
+        /* intentionally keep original *p_due (don't reset the timer) */
+    } else {
+        *p_pending = cJSON_Duplicate(raw, 1);
+        *p_due = now + holdTime;
+    }
+
+    /* Check if the pending decrease has now matured */
+    if (now >= *p_due) {
+        if (*p_last) cJSON_Delete(*p_last);
+        *p_last = *p_pending;
+        *p_pending = NULL;
+        return *p_last;
+    }
+
+    return NULL;
+}
+
+/*
+ * Load / reload area definitions from settings into g_areas[].
+ * Called at startup and whenever occupancy settings are saved.
+ */
+static void Occupancy_Load_Areas(void) {
+    /* Free any existing per-area cJSON state */
+    for (int i = 0; i < g_area_count; i++) {
+        if (g_areas[i].last_published)  { cJSON_Delete(g_areas[i].last_published);  g_areas[i].last_published  = NULL; }
+        if (g_areas[i].pending_counter) { cJSON_Delete(g_areas[i].pending_counter); g_areas[i].pending_counter = NULL; }
+    }
+    g_area_count = 0;
+
+    cJSON* settings = ACAP_Get_Config("settings");
+    if (!settings) return;
+    cJSON* occupancy = cJSON_GetObjectItem(settings, "occupancy");
+    if (!occupancy) return;
+    cJSON* areas = cJSON_GetObjectItem(occupancy, "areas");
+    if (!areas || !cJSON_IsArray(areas)) return;
+
+    int n = cJSON_GetArraySize(areas);
+    if (n > MAX_AREAS) n = MAX_AREAS;
+
+    for (int i = 0; i < n; i++) {
+        cJSON* area = cJSON_GetArrayItem(areas, i);
+        if (!area) continue;
+        cJSON* activeItem = cJSON_GetObjectItem(area, "active");
+        if (activeItem && !cJSON_IsTrue(activeItem)) continue;
+
+        OccupancyArea* a = &g_areas[g_area_count];
+        memset(a, 0, sizeof(OccupancyArea));
+
+        cJSON* idItem   = cJSON_GetObjectItem(area, "id");
+        cJSON* nameItem = cJSON_GetObjectItem(area, "name");
+        a->id     = idItem ? idItem->valueint : (i + 1);
+        a->active = 1;
+        if (nameItem && nameItem->valuestring)
+            snprintf(a->name, sizeof(a->name), "%s", nameItem->valuestring);
+        else
+            snprintf(a->name, sizeof(a->name), "Area%d", a->id);
+
+        cJSON* polygon = cJSON_GetObjectItem(area, "polygon");
+        if (polygon && cJSON_IsArray(polygon)) {
+            int pn = cJSON_GetArraySize(polygon);
+            if (pn > MAX_POLY_VERTICES) pn = MAX_POLY_VERTICES;
+            for (int j = 0; j < pn; j++) {
+                cJSON* pt = cJSON_GetArrayItem(polygon, j);
+                if (!pt) continue;
+                cJSON* xItem = cJSON_GetObjectItem(pt, "x");
+                cJSON* yItem = cJSON_GetObjectItem(pt, "y");
+                a->poly_x[j] = xItem ? xItem->valueint : 0;
+                a->poly_y[j] = yItem ? yItem->valueint : 0;
+            }
+            a->polygon_count = pn;
+        }
+        g_area_count++;
+    }
+    LOG("Occupancy: loaded %d active area(s)\n", g_area_count);
+}
+
+/*
+ * Publish an occupancy counter for one area (or the whole-frame fallback).
+ * area_name == NULL means whole-frame fallback → topic: occupancy/<serial>
+ * area_name != NULL                             → topic: occupancy/<serial>/<area>
+ */
+static void publish_occupancy(const char* area_name, cJSON* counter, double now) {
+    char topic[256];
+    cJSON* payload = cJSON_CreateObject();
+    if (area_name)
+        cJSON_AddStringToObject(payload, "area", area_name);
+    cJSON_AddItemToObject(payload, "occupancy", cJSON_Duplicate(counter, 1));
+    cJSON_AddNumberToObject(payload, "timestamp", now);
+    if (area_name)
+        snprintf(topic, sizeof(topic), "occupancy/%s/%s",
+                 ACAP_DEVICE_Prop("serial"), area_name);
+    else
+        snprintf(topic, sizeof(topic), "occupancy/%s",
+                 ACAP_DEVICE_Prop("serial"));
+    MQTT_Publish_JSON(topic, payload, 0, 0);
+    cJSON_Delete(payload);
+}
+
+/*
+ * Main occupancy processing — called each detection cycle.
+ * Handles both multi-area mode and whole-frame fallback.
+ */
+static void ProcessOccupancy(cJSON* list) {
+    cJSON* settings = ACAP_Get_Config("settings");
+    if (!settings) return;
+    cJSON* occ = cJSON_GetObjectItem(settings, "occupancy");
+    if (!occ) return;
+
+    int    stationary    = cJSON_IsTrue(cJSON_GetObjectItem(occ, "stationary"));
+    int    moving        = cJSON_IsTrue(cJSON_GetObjectItem(occ, "moving"));
+    double ageThreshold  = cJSON_GetObjectItem(occ, "ageThreshold")
+                           ? cJSON_GetObjectItem(occ, "ageThreshold")->valuedouble : 2.0;
+    double idleThreshold = cJSON_GetObjectItem(occ, "idleThreshold")
+                           ? cJSON_GetObjectItem(occ, "idleThreshold")->valuedouble : 3.0;
+    double holdTime      = cJSON_GetObjectItem(occ, "holdTime")
+                           ? cJSON_GetObjectItem(occ, "holdTime")->valuedouble : 3.0;
+
+    double now = ACAP_DEVICE_Timestamp();
+
+    cJSON* labels = ObjectDetection_Labels();   /* caller must cJSON_Delete */
+
+    if (g_area_count > 0) {
+        /* ── Multi-area mode ── */
+        for (int i = 0; i < g_area_count; i++) {
+            OccupancyArea* a = &g_areas[i];
+            if (!a->active) continue;
+
+            cJSON* raw = build_raw_counter(list, labels,
+                                           stationary, moving,
+                                           ageThreshold, idleThreshold,
+                                           a->poly_x, a->poly_y, a->polygon_count);
+
+            cJSON* to_publish = apply_hold_down(raw, now, holdTime,
+                                                &a->last_published,
+                                                &a->pending_counter,
+                                                &a->decrease_due_at);
+            cJSON_Delete(raw);
+
+            if (to_publish) {
+                publish_occupancy(a->name, to_publish, now);
+                /* Update status so the UI can poll without MQTT */
+                char status_key[80];
+                snprintf(status_key, sizeof(status_key), "area_%d", a->id);
+                cJSON* entry = cJSON_CreateObject();
+                cJSON_AddStringToObject(entry, "name", a->name);
+                cJSON_AddItemToObject(entry, "counter", cJSON_Duplicate(to_publish, 1));
+                ACAP_STATUS_SetObject("occupancy", status_key, entry);
+                cJSON_Delete(entry);
+            }
+        }
+    } else {
+        /* ── Whole-frame fallback mode ── */
+        cJSON* raw = build_raw_counter(list, labels,
+                                       stationary, moving,
+                                       ageThreshold, idleThreshold,
+                                       NULL, NULL, 0);
+
+        cJSON* to_publish = apply_hold_down(raw, now, holdTime,
+                                            &g_fallback_last,
+                                            &g_fallback_pending,
+                                            &g_fallback_due);
+        cJSON_Delete(raw);
+
+        if (to_publish) {
+            publish_occupancy(NULL, to_publish, now);
+            ACAP_STATUS_SetObject("occupancy", "counter", to_publish);
         }
     }
 
-    // Normalize and round counters before comparison
-    cJSON* item = counters->child;
-    while (item) {
-        item->valueint = (int)(item->valuedouble + 0.5);
-        item->valuedouble = (double)item->valueint;
-        item = item->next;
-    }
-
-    // Remove zero-count classes
-    item = counters->child;
-    while (item) {
-        cJSON* next = item->next;
-        if (item->valueint == 0)
-            cJSON_DeleteItemFromObjectCaseSensitive(counters, item->string);
-        item = next;
-    }
-
-    // Compare with the last reported occupancy before history/report
-    if (last_occupancy && Check_Counters_Equal(last_occupancy, counters)) {
-        cJSON_Delete(counters); // Clean up if not sending
-        return 0;
-    }
-
-    // Only now do we push to history and report
-    double now = ACAP_DEVICE_Timestamp();
-    push_occupancy_sample(now, counters);
-
-    if (last_occupancy)
-        cJSON_Delete(last_occupancy);
-    last_occupancy = cJSON_Duplicate(counters, 1);
-    ACAP_STATUS_SetObject("occupancy", "counter", counters);
-
-    return counters;
+    if (labels) cJSON_Delete(labels);
 }
 
 int lasty_detections_was_empty = 0;
@@ -862,33 +994,9 @@ void Detections_Data(cJSON *list) {
     }
     lasty_detections_was_empty = cJSON_GetArraySize(list) == 0;
 
-    if (publishOccupancy) {
-        // Process actual occupancy, update buffers
-        cJSON* counter = ProcessOccupancy(list);
-		if(counter ) {
-			double now = ACAP_DEVICE_Timestamp();
+    if (publishOccupancy)
+        ProcessOccupancy(list);
 
-			// Fetch settings (allow fallback if not found)
-			cJSON* settings = ACAP_Get_Config("settings");
-			cJSON* occupancy = settings ? cJSON_GetObjectItem(settings, "occupancy") : NULL;
-			double integrationTime = 2.0; // Default integration window
-			if (occupancy && cJSON_GetObjectItem(occupancy, "integrationTime")) {
-				integrationTime = cJSON_GetObjectItem(occupancy, "integrationTime")->valuedouble;
-			}
-
-			// Compute stabilized output
-			cJSON* stabilized = compute_stabilized_occupancy(now, integrationTime);
-			if (stabilized) {
-				cJSON* payload = cJSON_CreateObject();
-				cJSON_AddItemToObject(payload, "occupancy", stabilized);
-				cJSON_AddNumberToObject(payload, "timestamp", now);
-				snprintf(topic, sizeof(topic), "occupancy/%s", ACAP_DEVICE_Prop("serial"));
-				MQTT_Publish_JSON(topic, payload, 0, 0);
-				cJSON_Delete(payload);
-			}
-			cJSON_Delete(counter); // Unstabilized, only for transition/compat use
-		}
-    }
     cJSON_Delete(list);
 }
 
@@ -1232,7 +1340,10 @@ void Settings_Updated_Callback(const char* service, cJSON* data) {
         GeoSpace_Matrix(data);
 
     if (strcmp(service, "stitch") == 0)
-        Stitch_Settings(data);	
+        Stitch_Settings(data);
+
+    if (strcmp(service, "occupancy") == 0)
+        Occupancy_Load_Areas();
 }
 
 void HandleVersionUpdateConfigurations(cJSON* settings) {
@@ -1328,6 +1439,7 @@ int main(void) {
     }
 
     GeoSpace_Init();
+    Occupancy_Load_Areas();
     g_timeout_add_seconds(15 * 60, MQTT_Publish_Device_Status, NULL);
 
 	Stitch_Init(Publish_Path);
