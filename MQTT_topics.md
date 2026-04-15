@@ -215,8 +215,10 @@ Every payload published via `MQTT_Publish_JSON` automatically receives three ext
 
 ## occupancy/{serial}
 
+Whole-frame fallback — published when **no polygon areas are configured**.
+
 **Retained:** no  
-**Trigger:** On change (stabilised over configured integration window). Empty object published when scene clears.  
+**Trigger:** On change (hold-down debounce: increases immediately, decreases after `holdTime` seconds).  
 **Enable/disable:** `publish.occupancy`
 
 ```jsonc
@@ -233,6 +235,32 @@ Every payload published via `MQTT_Publish_JSON` automatically receives three ext
 ```
 
 `occupancy` is a dynamic object keyed by class name. Classes with count zero are omitted.
+
+---
+
+## occupancy/{serial}/{area_name}
+
+Per-area topic — published for **each configured polygon area** instead of the whole-frame topic above.
+
+**Retained:** no  
+**Trigger:** On change (hold-down debounce: increases immediately, decreases after `holdTime` seconds).  
+**Enable/disable:** `publish.occupancy`
+
+```jsonc
+{
+  "occupancy": {
+    "Human": 2,
+    "Car": 0
+  },
+  "area": "Entrance",
+  "timestamp": 1772276400318,
+  "serial": "B8A44F7ADD87",
+  "name": "Front entrance",
+  "location": "Sweden"
+}
+```
+
+`occupancy` contains all class labels that have been counted at least once in this area (zero values are included once a class has appeared). `area` is the user-defined name of the polygon zone.
 
 ---
 

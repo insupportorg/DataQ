@@ -118,7 +118,10 @@
 		"moving": true,		
 		"ageThreshold": 2.0,
 		"idleThreshold": 3.0,
-		"integrationTime": 2.0
+		"holdTime": 3.0,
+		"publishMode": "on_change",
+		"periodicInterval": 5,
+		"areas": []
 	},
 	"anomaly": {},
 	"stitch": {
