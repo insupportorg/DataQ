@@ -89,9 +89,16 @@ Event-based triggers for actions, offering streamlined MQTT message publishing c
 - Minimal bandwidth consumption and post processing needs
 
 **Occupancy Data**
-- Provides updates when number of detected objects in the scene changes
-	- Queue management
-	- Loitering
+- Tracks the number of detected objects in the scene, per class label
+  - Queue management
+  - Loitering detection
+  - Space utilisation
+
+  Occupancy supports up to 8 configurable polygon areas. Each area publishes its own counter independently.
+
+  Two output modes are available:
+  - **On change** — publishes immediately whenever a counter changes. A configurable hold-down delay prevents rapid fluctuations when counts decrease.
+  - **Periodic** — accumulates detections over a selected interval (1, 2, 5, 10 or 15 minutes) and publishes the average count per label as a float with one decimal of precision. Useful for trend monitoring and dashboards where average load matters more than instantaneous changes.
 
 **Geospace Data**  
   
@@ -292,6 +299,21 @@ For VMS (Video Mananagement Systems"), a stateful event "anomaly" will be fired 
 ***
 
 ## History
+
+### 3.2.0 Apr 10, 2026
+
+**Multi-area Occupancy** *(occupancy_multi_area branch)*
+- Occupancy zones are now defined as free-form polygons drawn directly on the live video feed — up to 8 independent areas per camera. Each area gets its own MQTT topic: `occupancy/<serial>/<area_name>`, with the full-scene fallback topic (`occupancy/<serial>`) still published when no areas are configured
+- Per-area counter payload includes only labels that have been counted at least once (zero-count classes are suppressed until they appear; once seen, they are always included even at zero)
+- Two publish modes available, selectable per deployment:
+  - **On change** — count increases publish immediately; decreases are held for a configurable `holdTime` (default 3 s) and cancelled if the count recovers before the timer fires, preventing rapid fluctuations
+  - **Periodic** — accumulates detections over a selected interval (1, 2, 5, 10, or 15 minutes) and publishes the average count per label as a float with one decimal of precision; useful for trend monitoring and dashboards
+
+**Tracker Significant-Movement Filter** *(tracker-filter branch)*
+- Added `significantMovement` setting to the scene configuration to suppress tracker MQTT updates from objects that have not moved a meaningful distance.  
+- The scene is split into an upper and a lower region by a configurable horizontal dividing line (y-coordinate in 0–1000 space, default 400)
+- Objects in the **upper** region (further from camera, smaller apparent size) must move at least `upperArea`% of their bounding-box size before a tracker update is published (default 30%)
+- Objects in the **lower** region (closer to camera, larger apparent size) require `lowerArea`% movement (default 70%)
 
 ### 3.1.5 Mar 16, 2026
 - **Geospace calibration persistence** — Fixed duplicate `markers` and `matrix` keys in settings.json template that caused calibration data to be overwritten with empty arrays after saving

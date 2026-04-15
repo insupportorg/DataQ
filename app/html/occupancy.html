@@ -65,11 +65,103 @@
                                 <!-- ── Video + Canvas ── -->
                                 <div class="col-auto">
                                     <div id="video-view" style="display:inline-block; position:relative;">
-                                        <div id="video" style="width:100%; height:100%;"></div>
+                                        <div id="video" style="width:100%; height:100%; position:absolute; top:0; left:0;"></div>
                                         <canvas id="area-canvas" width="1000" height="1000"
-                                                style="position:absolute; top:0; left:0; width:100%; height:100%;"></canvas>
+                                                style="position:absolute; top:0; left:0; width:100%; height:100%; z-index:5;"></canvas>
                                     </div>
                                     <div id="draw-hint" class="draw-hint" style="display:none;"></div>
+
+                                    <!-- Filters card -->
+                                    <div class="card mt-2">
+                                        <div class="card-body py-2 px-3">
+                                            <div class="small fw-semibold text-uppercase text-secondary mb-2" style="letter-spacing:.05em">Filters</div>
+                                            <div class="d-flex flex-wrap gap-4 align-items-start">
+
+                                                <!-- Count checkboxes -->
+                                                <div>
+                                                    <div class="small fw-semibold mb-1">Count</div>
+                                                    <div class="d-flex gap-3">
+                                                        <div class="form-check mb-0">
+                                                            <input class="form-check-input" type="checkbox" id="count-moving">
+                                                            <label class="form-check-label small" for="count-moving">Moving</label>
+                                                        </div>
+                                                        <div class="form-check mb-0">
+                                                            <input class="form-check-input" type="checkbox" id="count-stationary">
+                                                            <label class="form-check-label small" for="count-stationary">Stationary</label>
+                                                        </div>
+                                                    </div>
+                                                    <div class="text-muted mt-1" style="font-size:.72rem">Which object states to include</div>
+                                                </div>
+
+                                                <!-- Min age -->
+                                                <div>
+                                                    <label for="age-threshold" class="small fw-semibold d-block mb-1">Min. age</label>
+                                                    <div class="input-group input-group-sm" style="width:95px">
+                                                        <input type="number" class="form-control form-control-sm" id="age-threshold"
+                                                               min="0" max="60" step="0.5" value="2">
+                                                        <span class="input-group-text">s</span>
+                                                    </div>
+                                                    <div class="text-muted mt-1" style="font-size:.72rem">Track time before counting</div>
+                                                </div>
+
+                                                <!-- Stationary time -->
+                                                <div>
+                                                    <label for="idle-threshold" class="small fw-semibold d-block mb-1">Stationary time</label>
+                                                    <div class="input-group input-group-sm" style="width:95px">
+                                                        <input type="number" class="form-control form-control-sm" id="idle-threshold"
+                                                               min="0" max="60" step="0.5" value="3">
+                                                        <span class="input-group-text">s</span>
+                                                    </div>
+                                                    <div class="text-muted mt-1" style="font-size:.72rem">Idle time to count as stationary</div>
+                                                </div>
+
+                                                <!-- Hold-down -->
+                                                <div id="hold-time-group">
+                                                    <label for="hold-time" class="small fw-semibold d-block mb-1">Hold-down</label>
+                                                    <div class="input-group input-group-sm" style="width:95px">
+                                                        <input type="number" class="form-control form-control-sm" id="hold-time"
+                                                               min="0" max="30" step="0.5" value="3">
+                                                        <span class="input-group-text">s</span>
+                                                    </div>
+                                                    <div class="text-muted mt-1" style="font-size:.72rem">Delay before reporting a decrease</div>
+                                                </div>
+
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    <!-- Publish card -->
+                                    <div class="card mt-2">
+                                        <div class="card-body py-2 px-3">
+                                            <div class="small fw-semibold text-uppercase text-secondary mb-2" style="letter-spacing:.05em">Publish</div>
+                                            <div class="d-flex flex-wrap gap-4 align-items-start">
+
+                                                <!-- Mode -->
+                                                <div>
+                                                    <label for="publish-mode" class="small fw-semibold d-block mb-1">Mode</label>
+                                                    <select class="form-select form-select-sm" id="publish-mode" style="width:130px">
+                                                        <option value="on_change">On change</option>
+                                                        <option value="periodic">Periodic</option>
+                                                    </select>
+                                                    <div class="text-muted mt-1" style="font-size:.72rem">When to send the MQTT message</div>
+                                                </div>
+
+                                                <!-- Interval (only shown in periodic mode) -->
+                                                <div id="periodic-interval-group" style="display:none">
+                                                    <label for="periodic-interval" class="small fw-semibold d-block mb-1">Interval</label>
+                                                    <select class="form-select form-select-sm" id="periodic-interval" style="width:110px">
+                                                        <option value="1">1 minute</option>
+                                                        <option value="2">2 minutes</option>
+                                                        <option value="5">5 minutes</option>
+                                                        <option value="10">10 minutes</option>
+                                                        <option value="15">15 minutes</option>
+                                                    </select>
+                                                    <div class="text-muted mt-1" style="font-size:.72rem">Average is published each interval</div>
+                                                </div>
+
+                                            </div>
+                                        </div>
+                                    </div>
                                 </div>
 
                                 <!-- ── Right panel ── -->
@@ -84,47 +176,6 @@
                                         </div>
                                     </div>
                                     <div id="area-list"></div>
-
-                                    <hr class="my-2">
-
-                                    <!-- Global thresholds -->
-                                    <div class="mb-2">
-                                        <label class="form-label fw-semibold mb-1">Count objects that are:</label>
-                                        <div>
-                                            <div class="form-check form-check-inline">
-                                                <input class="form-check-input" type="checkbox" id="count-moving">
-                                                <label class="form-check-label" for="count-moving">Moving</label>
-                                            </div>
-                                            <div class="form-check form-check-inline">
-                                                <input class="form-check-input" type="checkbox" id="count-stationary">
-                                                <label class="form-check-label" for="count-stationary">Stationary</label>
-                                            </div>
-                                        </div>
-                                    </div>
-                                    <div class="row g-2 mb-1">
-                                        <div class="col-4">
-                                            <label for="age-threshold" class="form-label small mb-0">Min. age (s)</label>
-                                            <input type="number" class="form-control form-control-sm" id="age-threshold"
-                                                   min="0" max="60" step="0.5" value="2">
-                                        </div>
-                                        <div class="col-4">
-                                            <label for="idle-threshold" class="form-label small mb-0">Stationary (s)</label>
-                                            <input type="number" class="form-control form-control-sm" id="idle-threshold"
-                                                   min="0" max="60" step="0.5" value="3">
-                                        </div>
-                                        <div class="col-4">
-                                            <label for="hold-time" class="form-label small mb-0">Hold-down (s)</label>
-                                            <input type="number" class="form-control form-control-sm" id="hold-time"
-                                                   min="0" max="30" step="0.5" value="3">
-                                        </div>
-                                    </div>
-                                    <div class="mb-2">
-                                        <small class="text-muted">
-                                            <strong>Min. age</strong> – ignore objects tracked less than this long.<br>
-                                            <strong>Stationary</strong> – idle longer than this = stationary.<br>
-                                            <strong>Hold-down</strong> – delay before publishing a count decrease.
-                                        </small>
-                                    </div>
 
                                 </div><!-- /right panel -->
                             </div><!-- /row -->
@@ -154,11 +205,21 @@ let drawMode     = false;
 let drawPoints   = [];        /* [{x,y}] in 0-1000 canvas space */
 let mouseCanvasX = 0;
 let mouseCanvasY = 0;
+let mouseShift   = false;
+
+/* Editing */
+let editAreaIdx  = -1;    /* index in areas[] currently selected (-1 = none)  */
+let dragVertex   = -1;    /* vertex index being dragged (-1 = none)            */
+let dragPolygon  = false; /* true when dragging entire polygon                 */
+let dragLastX    = 0;
+let dragLastY    = 0;
+let isDragging   = false; /* true once pointer has moved since mousedown       */
 
 /* Live data */
 let liveDetections = [];
-const areaCounters = {};   /* area.name → counter object */
-let pollTimer      = null;
+const areaCounters  = {};    /* area.name → current counter object (all ever-seen labels) */
+const areaSeenLabels = {};   /* area.name → Set of labels ever counted ≥1 */
+let pollTimer       = null;
 
 /* ─────────────────────────────────────────────────────────────────── */
 /* Utilities                                                            */
@@ -182,6 +243,58 @@ function polygonCentroid(pts) {
     let sx = 0, sy = 0;
     for (const p of pts) { sx += p.x; sy += p.y; }
     return { x: sx / pts.length, y: sy / pts.length };
+}
+
+/* ─── Polygon edit helpers ───────────────────────────────────────── */
+const VERTEX_R   = 15;  /* hit-test / draw radius — canvas units */
+const EDGE_HIT_R = 10;
+
+function ptSegDist(px, py, ax, ay, bx, by) {
+    const dx = bx - ax, dy = by - ay;
+    const lenSq = dx * dx + dy * dy;
+    if (lenSq === 0) return Math.hypot(px - ax, py - ay);
+    const t = Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / lenSq));
+    return Math.hypot(px - (ax + t * dx), py - (ay + t * dy));
+}
+
+function hitVertex(poly, px, py) {
+    for (let i = 0; i < poly.length; i++)
+        if (Math.hypot(poly[i].x - px, poly[i].y - py) <= VERTEX_R) return i;
+    return -1;
+}
+
+function hitEdge(poly, px, py) {
+    for (let i = 0; i < poly.length; i++) {
+        const a = poly[i], b = poly[(i + 1) % poly.length];
+        if (ptSegDist(px, py, a.x, a.y, b.x, b.y) <= EDGE_HIT_R) return i;
+    }
+    return -1;
+}
+
+function pointInPoly(poly, px, py) {
+    let inside = false;
+    for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+        const xi = poly[i].x, yi = poly[i].y, xj = poly[j].x, yj = poly[j].y;
+        if (((yi > py) !== (yj > py)) && (px < (xj - xi) * (py - yi) / (yj - yi) + xi))
+            inside = !inside;
+    }
+    return inside;
+}
+
+function getCursor(px, py, shiftKey) {
+    if (drawMode) return 'crosshair';
+    const areas = (app && app.settings.occupancy.areas) || [];
+    if (editAreaIdx >= 0 && areas[editAreaIdx]) {
+        const poly = areas[editAreaIdx].polygon || [];
+        if (poly.length && hitVertex(poly, px, py) >= 0)            return 'grab';
+        if (shiftKey && poly.length && hitEdge(poly, px, py) >= 0)  return 'copy';
+        if (poly.length && pointInPoly(poly, px, py))                return 'move';
+        return 'default';
+    }
+    for (const area of areas)
+        if (area.polygon && area.polygon.length >= 3 && pointInPoly(area.polygon, px, py))
+            return 'pointer';
+    return 'default';
 }
 
 function showToast(msg, type) {
@@ -214,10 +327,11 @@ function renderAreaList() {
 
     areas.forEach((area, idx) => {
         const color   = areaColor(idx);
-        const counter = areaCounters[area.name] || {};
+        const seen    = areaSeenLabels[area.name] || new Set();
+        const counter = areaCounters[area.name]   || {};
         let rows = '';
-        for (const [cls, val] of Object.entries(counter))
-            rows += `<tr><td>${cls}</td><td><strong>${val}</strong></td></tr>`;
+        for (const cls of seen)
+            rows += `<tr><td>${cls}</td><td><strong>${counter[cls] ?? 0}</strong></td></tr>`;
         if (!rows) rows = '<tr><td colspan="2" class="text-muted small">—</td></tr>';
 
         container.insertAdjacentHTML('beforeend',
@@ -258,12 +372,24 @@ function renderAreaList() {
     redrawCanvas();
 }
 
-function updateAreaCounterTable(areaId, counter) {
+function updateAreaCounterTable(areaId, areaName, counter) {
     const tbody = document.getElementById('counter-tbody-' + areaId);
     if (!tbody) return;
-    let html = '';
+
+    /* Track which labels have ever had a count ≥ 1 */
+    if (!areaSeenLabels[areaName]) areaSeenLabels[areaName] = new Set();
+    const seen = areaSeenLabels[areaName];
     for (const [cls, val] of Object.entries(counter))
-        html += `<tr><td>${cls}</td><td><strong>${val}</strong></td></tr>`;
+        if (val >= 1) seen.add(cls);
+
+    /* Merge incoming counter into stored counter, preserving seen labels */
+    if (!areaCounters[areaName]) areaCounters[areaName] = {};
+    Object.assign(areaCounters[areaName], counter);
+
+    /* Only render rows for labels that have been seen at least once */
+    let html = '';
+    for (const cls of seen)
+        html += `<tr><td>${cls}</td><td><strong>${areaCounters[areaName][cls] ?? 0}</strong></td></tr>`;
     tbody.innerHTML = html || '<tr><td colspan="2" class="text-muted small">—</td></tr>';
 }
 
@@ -279,16 +405,25 @@ function redrawCanvas() {
     const areas = (app && app.settings.occupancy.areas) || [];
     areas.forEach((area, idx) => {
         if (!area.polygon || area.polygon.length < 3) return;
-        const color = areaColor(idx);
+        const color    = areaColor(idx);
+        const selected = (idx === editAreaIdx);
+
         ctx.beginPath();
         ctx.moveTo(area.polygon[0].x, area.polygon[0].y);
         for (let i = 1; i < area.polygon.length; i++)
             ctx.lineTo(area.polygon[i].x, area.polygon[i].y);
         ctx.closePath();
-        ctx.fillStyle   = hexToRgba(color, area.active ? 0.20 : 0.07);
-        ctx.strokeStyle = color;
-        ctx.lineWidth   = 2;
+        ctx.fillStyle = hexToRgba(color, area.active ? 0.20 : 0.07);
         ctx.fill();
+
+        if (selected) {
+            /* White glow behind selected polygon outline */
+            ctx.strokeStyle = 'rgba(255,255,255,0.75)';
+            ctx.lineWidth   = 6;
+            ctx.stroke();
+        }
+        ctx.strokeStyle = color;
+        ctx.lineWidth   = selected ? 2.5 : 2;
         ctx.stroke();
 
         const c = polygonCentroid(area.polygon);
@@ -297,6 +432,33 @@ function redrawCanvas() {
         ctx.textAlign    = 'center';
         ctx.textBaseline = 'middle';
         ctx.fillText(area.name, c.x, c.y);
+
+        /* Vertex handles for selected polygon */
+        if (selected) {
+            const hovV = hitVertex(area.polygon, mouseCanvasX, mouseCanvasY);
+            const hovE = (mouseShift && hovV < 0)
+                         ? hitEdge(area.polygon, mouseCanvasX, mouseCanvasY) : -1;
+            area.polygon.forEach((pt, vi) => {
+                const isHov = (vi === hovV);
+                ctx.beginPath();
+                ctx.arc(pt.x, pt.y, isHov ? VERTEX_R + 4 : VERTEX_R, 0, Math.PI * 2);
+                ctx.fillStyle   = isHov ? '#ffffff' : hexToRgba(color, 0.85);
+                ctx.strokeStyle = isHov ? color : 'rgba(255,255,255,0.9)';
+                ctx.lineWidth   = 2;
+                ctx.fill();
+                ctx.stroke();
+            });
+            /* Edge insertion hint dot */
+            if (hovE >= 0) {
+                ctx.beginPath();
+                ctx.arc(mouseCanvasX, mouseCanvasY, VERTEX_R, 0, Math.PI * 2);
+                ctx.fillStyle   = '#00ff88';
+                ctx.strokeStyle = 'rgba(255,255,255,0.9)';
+                ctx.lineWidth   = 2;
+                ctx.fill();
+                ctx.stroke();
+            }
+        }
     });
 
     /* In-progress polygon */
@@ -323,41 +485,64 @@ function redrawCanvas() {
         });
     }
 
-    /* Live detection boxes */
-    ctx.lineWidth    = 3;
-    ctx.strokeStyle  = '#FFFF00';
-    ctx.fillStyle    = '#FFFF00';
-    ctx.font         = '28px Arial';
+    /* Live detection COG dots — use det.cx/cy (scene.cog-aware, same point used for PIP) */
+    ctx.font         = 'bold 26px Arial';
     ctx.textAlign    = 'left';
-    ctx.textBaseline = 'alphabetic';
-    ctx.beginPath();
+    ctx.textBaseline = 'middle';
     liveDetections.forEach(det => {
         if (typeof det !== 'object' || !det) return;
-        ctx.rect(det.x, det.y, det.w, det.h);
+        const cx = det.cx != null ? det.cx : (det.x + det.w / 2);
+        const cy = det.cy != null ? det.cy : (det.y + det.h / 2);
+
+        /* Yellow filled circle */
+        ctx.beginPath();
+        ctx.arc(cx, cy, 10, 0, Math.PI * 2);
+        ctx.fillStyle   = '#FFE000';
+        ctx.strokeStyle = 'rgba(0,0,0,0.55)';
+        ctx.lineWidth   = 2;
+        ctx.fill();
+        ctx.stroke();
+
+        /* Label to the right */
         let text = det.class || 'Unknown';
         if (det.age !== undefined) {
             let age = det.age.toFixed(1) + 's';
-            if (det.age > 3600)     age = Math.floor(det.age / 3600) + 'h';
-            else if (det.age > 60)  age = Math.floor(det.age / 60)   + 'm';
+            if (det.age > 3600)    age = Math.floor(det.age / 3600) + 'h';
+            else if (det.age > 60) age = Math.floor(det.age / 60)   + 'm';
             text += ' ' + age;
         }
-        ctx.fillText(text, det.x, det.y - 6);
+        /* Thin shadow for readability on any background */
+        ctx.fillStyle    = 'rgba(0,0,0,0.6)';
+        ctx.fillText(text, cx + 16, cy + 2);
+        ctx.fillStyle    = '#FFE000';
+        ctx.fillText(text, cx + 15, cy + 1);
     });
-    ctx.stroke();
 }
 
 /* ─────────────────────────────────────────────────────────────────── */
-/* Draw mode                                                            */
+/* Draw / edit mode helpers                                             */
 /* ─────────────────────────────────────────────────────────────────── */
+function updateHint() {
+    const hint = document.getElementById('draw-hint');
+    if (drawMode) {
+        hint.style.display = '';
+        hint.textContent   = 'Click to place vertices · Click first point (green) or double-click to close · Esc to cancel';
+    } else if (editAreaIdx >= 0) {
+        hint.style.display = '';
+        hint.textContent   = 'Drag vertex · Shift+click edge to add vertex · Right-click vertex to remove · Drag inside to move polygon · Click outside or Esc to deselect';
+    } else {
+        hint.style.display = 'none';
+    }
+}
+
 function startDrawMode() {
-    drawMode   = true;
-    drawPoints = [];
+    editAreaIdx = -1;
+    drawMode    = true;
+    drawPoints  = [];
     document.getElementById('area-canvas').classList.add('draw-mode');
     document.getElementById('btn-add-area').style.display    = 'none';
     document.getElementById('btn-cancel-draw').style.display = '';
-    const hint = document.getElementById('draw-hint');
-    hint.style.display = '';
-    hint.textContent   = 'Click to place vertices. Click the first point (green) or double-click to close the polygon.';
+    updateHint();
 }
 
 function cancelDrawMode() {
@@ -366,7 +551,7 @@ function cancelDrawMode() {
     document.getElementById('area-canvas').classList.remove('draw-mode');
     document.getElementById('btn-add-area').style.display    = '';
     document.getElementById('btn-cancel-draw').style.display = 'none';
-    document.getElementById('draw-hint').style.display       = 'none';
+    updateHint();
     redrawCanvas();
 }
 
@@ -375,8 +560,9 @@ function commitPolygon() {
         showToast('A polygon needs at least 3 points.', 'warning');
         return;
     }
-    const areas = app.settings.occupancy.areas || [];
-    const maxId = areas.reduce((m, a) => Math.max(m, a.id || 0), 0);
+    const areas  = app.settings.occupancy.areas || [];
+    const maxId  = areas.reduce((m, a) => Math.max(m, a.id || 0), 0);
+    const newIdx = areas.length;
     areas.push({
         id:      maxId + 1,
         name:    'Area ' + (maxId + 1),
@@ -385,7 +571,8 @@ function commitPolygon() {
     });
     app.settings.occupancy.areas = areas;
     cancelDrawMode();
-    saveOccupancySettings(() => renderAreaList());
+    editAreaIdx = newIdx;
+    saveOccupancySettings(() => { renderAreaList(); updateHint(); redrawCanvas(); });
 }
 
 /* ─────────────────────────────────────────────────────────────────── */
@@ -411,13 +598,27 @@ function renameArea(id, name) {
 /* ─────────────────────────────────────────────────────────────────── */
 /* Persistence                                                          */
 /* ─────────────────────────────────────────────────────────────────── */
+function parseNum(selector, def) {
+    const v = parseFloat($(selector).val());
+    return isNaN(v) ? def : v;
+}
+
+function applyModeVisibility() {
+    const periodic = $('#publish-mode').val() === 'periodic';
+    $('#hold-time').prop('disabled', periodic);
+    $('#hold-time-group').css('opacity', periodic ? 0.4 : 1.0);
+    $('#periodic-interval-group').toggle(periodic);
+}
+
 function saveOccupancySettings(callback) {
     const occ         = app.settings.occupancy;
     occ.moving        = $('#count-moving').is(':checked');
     occ.stationary    = $('#count-stationary').is(':checked');
-    occ.ageThreshold  = parseFloat($('#age-threshold').val())  || 2.0;
-    occ.idleThreshold = parseFloat($('#idle-threshold').val()) || 3.0;
-    occ.holdTime      = parseFloat($('#hold-time').val())      || 3.0;
+    occ.ageThreshold  = parseNum('#age-threshold',  2.0);
+    occ.idleThreshold = parseNum('#idle-threshold', 3.0);
+    occ.holdTime      = parseNum('#hold-time',      3.0);
+    occ.publishMode      = $('#publish-mode').val();
+    occ.periodicInterval = parseInt($('#periodic-interval').val(), 10) || 5;
     $.ajax({
         type: 'POST', url: 'settings', contentType: 'application/json',
         data: JSON.stringify({ occupancy: occ }),
@@ -432,14 +633,12 @@ function saveOccupancySettings(callback) {
 function startPolling() {
     if (pollTimer) return;
     pollTimer = setInterval(() => {
-        $.getJSON('app', data => {
-            const occStatus = (data.status && data.status.occupancy) ? data.status.occupancy : {};
+        $.getJSON('status', data => {
+            const occStatus = (data && data.occupancy) ? data.occupancy : {};
             (app.settings.occupancy.areas || []).forEach(area => {
                 const entry = occStatus['area_' + area.id];
-                if (entry && entry.counter) {
-                    areaCounters[area.name] = entry.counter;
-                    updateAreaCounterTable(area.id, entry.counter);
-                }
+                if (entry && entry.counter)
+                    updateAreaCounterTable(area.id, area.name, entry.counter);
             });
         });
     }, 2000);
@@ -512,9 +711,8 @@ function onMessageArrived(message) {
     if (section === 'occupancy' && payload.occupancy) {
         if (payload.area) {
             /* Per-area topic */
-            areaCounters[payload.area] = payload.occupancy;
             const area = (app.settings.occupancy.areas || []).find(a => a.name === payload.area);
-            if (area) updateAreaCounterTable(area.id, payload.occupancy);
+            if (area) updateAreaCounterTable(area.id, payload.area, payload.occupancy);
         }
         /* Whole-frame fallback ignored (no area list shown in that mode) */
     }
@@ -534,13 +732,12 @@ function PlayVideo(aspect, rotation) {
     }
     if (rotation === 90 || rotation === 270) { const t = videoW; videoW = videoH; videoH = t; }
     $('#video-view').css({ width: videoW + 'px', height: videoH + 'px' });
-    const videoEl = document.createElement('media-stream-player');
-    videoEl.setAttribute('hostname', app.device.IPv4);
-    videoEl.setAttribute('autoplay', '');
-    videoEl.setAttribute('secure', location.protocol === 'https:');
-    videoEl.style.width  = '100%';
-    videoEl.style.height = '100%';
-    document.getElementById('video').appendChild(videoEl);
+    const secure = location.protocol === 'https:' ? ' secure' : '';
+    const player = '<media-stream-player hostname="' + window.location.hostname + '"'
+        + ' format="RTP_H264" compression="40" audio="0"'
+        + ' resolution="' + vW + 'x' + vH + '"'
+        + ' variant="basic" autoplay' + secure + '></media-stream-player>';
+    $('#video').append(player);
 }
 
 /* ─────────────────────────────────────────────────────────────────── */
@@ -577,9 +774,18 @@ $(document).ready(function() {
             $('#age-threshold').val(occ.ageThreshold  != null ? occ.ageThreshold  : 2.0);
             $('#idle-threshold').val(occ.idleThreshold != null ? occ.idleThreshold : 3.0);
             $('#hold-time').val(occ.holdTime != null ? occ.holdTime : 3.0);
+            $('#publish-mode').val(occ.publishMode || 'on_change');
+            $('#periodic-interval').val(occ.periodicInterval || 5);
+            applyModeVisibility();
 
-            $('#count-moving, #count-stationary, #age-threshold, #idle-threshold, #hold-time')
-                .on('change', () => saveOccupancySettings());
+            $('#count-moving, #count-stationary').on('change', () => saveOccupancySettings());
+            $('#publish-mode').on('change', function() { applyModeVisibility(); saveOccupancySettings(); });
+            $('#periodic-interval').on('change', () => saveOccupancySettings());
+            let _thresholdTimer = null;
+            $('#age-threshold, #idle-threshold, #hold-time').on('input change', () => {
+                clearTimeout(_thresholdTimer);
+                _thresholdTimer = setTimeout(() => saveOccupancySettings(), 600);
+            });
 
             /* Enable detections temporarily for canvas overlay if needed */
             if (app.settings.publish.detections === false) {
@@ -594,32 +800,145 @@ $(document).ready(function() {
             renderAreaList();
             PlayVideo(app.device.aspect || '16:9', app.settings.scene.rotation);
 
-            /* Canvas interaction */
+            /* Canvas event listeners */
             const canvas = document.getElementById('area-canvas');
 
-            canvas.addEventListener('mousemove', evt => {
-                const p = canvasCoords(canvas, evt);
-                mouseCanvasX = p.x; mouseCanvasY = p.y;
-                if (drawMode) redrawCanvas();
+            /* Right-click: remove vertex */
+            canvas.addEventListener('contextmenu', evt => {
+                evt.preventDefault();
+                if (drawMode || editAreaIdx < 0) return;
+                const p    = canvasCoords(canvas, evt);
+                const area = (app.settings.occupancy.areas || [])[editAreaIdx];
+                if (!area) return;
+                const vi = hitVertex(area.polygon, p.x, p.y);
+                if (vi < 0) return;
+                if (area.polygon.length <= 3) {
+                    showToast('A polygon must have at least 3 vertices.', 'warning');
+                    return;
+                }
+                area.polygon.splice(vi, 1);
+                redrawCanvas();
+                saveOccupancySettings();
             });
 
+            /* Mouse move: update cursor + process drags */
+            canvas.addEventListener('mousemove', evt => {
+                const p  = canvasCoords(canvas, evt);
+                mouseCanvasX = p.x;
+                mouseCanvasY = p.y;
+                mouseShift   = evt.shiftKey;
+
+                if (dragVertex >= 0 && editAreaIdx >= 0) {
+                    const area = (app.settings.occupancy.areas || [])[editAreaIdx];
+                    if (area && area.polygon[dragVertex]) {
+                        area.polygon[dragVertex] = { x: p.x, y: p.y };
+                        isDragging = true;
+                    }
+                } else if (dragPolygon && editAreaIdx >= 0) {
+                    const area = (app.settings.occupancy.areas || [])[editAreaIdx];
+                    if (area) {
+                        const dx = p.x - dragLastX, dy = p.y - dragLastY;
+                        area.polygon.forEach(pt => { pt.x += dx; pt.y += dy; });
+                        isDragging = true;
+                    }
+                    dragLastX = p.x;
+                    dragLastY = p.y;
+                }
+
+                canvas.style.cursor = getCursor(p.x, p.y, evt.shiftKey);
+                redrawCanvas();
+            });
+
+            /* Mouse down: start drag / select / insert vertex */
+            canvas.addEventListener('mousedown', evt => {
+                if (evt.button !== 0) return;
+                const p    = canvasCoords(canvas, evt);
+                isDragging = false;
+
+                if (drawMode) return; /* draw clicks handled by 'click' event */
+
+                const areas = app.settings.occupancy.areas || [];
+
+                if (editAreaIdx >= 0) {
+                    const area = areas[editAreaIdx];
+                    if (area && area.polygon) {
+                        /* Vertex drag */
+                        const vi = hitVertex(area.polygon, p.x, p.y);
+                        if (vi >= 0) { dragVertex = vi; return; }
+
+                        /* Shift+click on edge → insert vertex, then drag it */
+                        if (evt.shiftKey) {
+                            const ei = hitEdge(area.polygon, p.x, p.y);
+                            if (ei >= 0) {
+                                area.polygon.splice(ei + 1, 0, { x: p.x, y: p.y });
+                                dragVertex = ei + 1;
+                                isDragging = true;
+                                redrawCanvas();
+                                return;
+                            }
+                        }
+
+                        /* Drag whole polygon */
+                        if (pointInPoly(area.polygon, p.x, p.y)) {
+                            dragPolygon = true;
+                            dragLastX   = p.x;
+                            dragLastY   = p.y;
+                            return;
+                        }
+                    }
+                    /* Clicked outside — deselect */
+                    editAreaIdx = -1;
+                    updateHint();
+                    canvas.style.cursor = 'default';
+                    redrawCanvas();
+                }
+
+                /* Try to select a polygon */
+                for (let i = 0; i < areas.length; i++) {
+                    if (areas[i].polygon && areas[i].polygon.length >= 3 &&
+                        pointInPoly(areas[i].polygon, p.x, p.y)) {
+                        editAreaIdx = i;
+                        updateHint();
+                        redrawCanvas();
+                        return;
+                    }
+                }
+            });
+
+            /* Mouse up: finish drag, save if changed */
+            canvas.addEventListener('mouseup', evt => {
+                if (evt.button !== 0) return;
+                const wasDragging = isDragging;
+                dragVertex  = -1;
+                dragPolygon = false;
+                isDragging  = false;
+                if (wasDragging) saveOccupancySettings();
+            });
+
+            /* Click: draw mode vertex placement */
             canvas.addEventListener('click', evt => {
                 if (!drawMode) return;
                 const p = canvasCoords(canvas, evt);
                 if (drawPoints.length >= 3) {
-                    const fp   = drawPoints[0];
-                    const dist = Math.hypot(p.x - fp.x, p.y - fp.y);
-                    if (dist < 20) { commitPolygon(); return; }
+                    const fp = drawPoints[0];
+                    if (Math.hypot(p.x - fp.x, p.y - fp.y) < 20) { commitPolygon(); return; }
                 }
                 drawPoints.push(p);
                 redrawCanvas();
             });
 
+            /* Double-click: commit polygon in draw mode */
             canvas.addEventListener('dblclick', evt => {
                 if (!drawMode) return;
-                /* The second click of a dblclick already added a point — remove it */
-                drawPoints.pop();
+                drawPoints.pop(); /* second click of dblclick already added a point */
                 commitPolygon();
+            });
+
+            /* Escape: cancel draw or deselect */
+            document.addEventListener('keydown', evt => {
+                if (evt.key !== 'Escape') return;
+                if (drawMode) { cancelDrawMode(); canvas.style.cursor = 'default'; return; }
+                if (editAreaIdx >= 0) { editAreaIdx = -1; updateHint(); canvas.style.cursor = 'default'; redrawCanvas(); }
             });
 
             document.getElementById('btn-add-area').addEventListener('click', startDrawMode);

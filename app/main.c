@@ -73,6 +73,9 @@ typedef struct {
     cJSON* last_published;   /* full counter last sent  { "Human":1, "Car":0, … } */
     cJSON* pending_counter;  /* pending decrease (NULL = none)                     */
     double decrease_due_at;  /* monotonic timestamp when pending fires              */
+    cJSON* seen_labels;      /* object: keys = labels ever counted >=1 for this area */
+    cJSON* acc_sum;          /* running label sums for periodic publish               */
+    int    acc_count;        /* number of detection-cycle samples accumulated         */
 } OccupancyArea;
 
 static OccupancyArea g_areas[MAX_AREAS];
@@ -82,6 +85,14 @@ static int           g_area_count = 0;
 static cJSON*  g_fallback_last    = NULL;
 static cJSON*  g_fallback_pending = NULL;
 static double  g_fallback_due     = 0.0;
+static cJSON*  g_fallback_seen    = NULL;
+
+/* Periodic publish state */
+static cJSON*  g_fallback_acc_sum   = NULL;
+static int     g_fallback_acc_count = 0;
+static guint   g_periodic_timer_id  = 0;
+static int     g_occ_periodic       = 0;     /* 0 = on_change, 1 = periodic */
+static int     g_occ_interval_sec   = 300;   /* default 5 min               */
 
 
 cJSON* ProcessPaths(cJSON* tracker) {
@@ -466,7 +477,7 @@ Check_Anomaly(cJSON* tracker) {
             item = item->next;
         }
         if (!found_common) {
-            LOG("Invalid entry");
+            LOG_WARN("%s: Invalid entry", __func__);
             Fire_Anomaly();
             cJSON_AddStringToObject(tracker, "anomaly", "Invalid entry");
             return;
@@ -700,7 +711,7 @@ static int point_in_polygon(int px, int py, int* xs, int* ys, int n) {
 
 /*
  * Build a raw per-label counter from the tracker list.
- * Every label in `labels` is present in the result (value may be 0).
+ * Only labels with a non-zero count are present in the result.
  * If poly_n >= 3, only detections whose COG is inside the polygon are counted.
  */
 static cJSON* build_raw_counter(cJSON* list, cJSON* labels,
@@ -708,10 +719,6 @@ static cJSON* build_raw_counter(cJSON* list, cJSON* labels,
                                 double ageThreshold, double idleThreshold,
                                 int* poly_x, int* poly_y, int poly_n) {
     cJSON* counter = cJSON_CreateObject();
-    /* Initialise all labels to 0 */
-    for (cJSON* lbl = labels ? labels->child : NULL; lbl; lbl = lbl->next)
-        if (lbl->valuestring)
-            cJSON_AddNumberToObject(counter, lbl->valuestring, 0);
 
     int listSize = cJSON_GetArraySize(list);
     for (int i = 0; i < listSize; i++) {
@@ -723,6 +730,15 @@ static cJSON* build_raw_counter(cJSON* list, cJSON* labels,
         cJSON* cxItem   = cJSON_GetObjectItem(det, "cx");
         cJSON* cyItem   = cJSON_GetObjectItem(det, "cy");
         if (!clsItem || !clsItem->valuestring || !ageItem || !idleItem) continue;
+
+        /* Only count labels in the allowed set (labels is a JSON array) */
+        if (labels) {
+            int found = 0;
+            for (cJSON* lbl = labels->child; lbl; lbl = lbl->next)
+                if (lbl->valuestring && strcmp(lbl->valuestring, clsItem->valuestring) == 0)
+                    { found = 1; break; }
+            if (!found) continue;
+        }
 
         /* Polygon filter (COG must be inside) */
         if (poly_n >= 3) {
@@ -739,12 +755,32 @@ static cJSON* build_raw_counter(cJSON* list, cJSON* labels,
         if (!((moving && is_moving) || (stationary && is_stationary)))
             continue;
 
-        /* Only count labels that are in our allowed set */
         cJSON* curr = cJSON_GetObjectItem(counter, clsItem->valuestring);
         if (curr)
             curr->valuedouble += 1.0;
+        else
+            cJSON_AddNumberToObject(counter, clsItem->valuestring, 1.0);
     }
     return counter;
+}
+
+/*
+ * Merge ever-seen labels into `raw` (adding them at 0 if absent) and
+ * record any newly non-zero labels into `*p_seen`.
+ * `*p_seen` is created lazily if NULL.
+ */
+static void merge_with_seen(cJSON* raw, cJSON** p_seen) {
+    if (!*p_seen) *p_seen = cJSON_CreateObject();
+
+    /* Record newly non-zero labels */
+    for (cJSON* item = raw->child; item; item = item->next)
+        if (item->valuedouble > 0 && !cJSON_GetObjectItem(*p_seen, item->string))
+            cJSON_AddTrueToObject(*p_seen, item->string);
+
+    /* Add previously-seen labels at 0 if missing from raw */
+    for (cJSON* lbl = (*p_seen)->child; lbl; lbl = lbl->next)
+        if (!cJSON_GetObjectItem(raw, lbl->string))
+            cJSON_AddNumberToObject(raw, lbl->string, 0.0);
 }
 
 /*
@@ -824,6 +860,63 @@ static cJSON* apply_hold_down(cJSON* raw, double now, double holdTime,
     return NULL;
 }
 
+/* Forward declaration — needed by periodic_occupancy_cb */
+static void publish_occupancy(const char* area_name, cJSON* counter, double now);
+
+/*
+ * GLib timer callback: fires every g_occ_interval_sec seconds in periodic mode.
+ * Computes per-label average (1 decimal precision) from accumulated samples and publishes.
+ */
+static gboolean periodic_occupancy_cb(gpointer user_data) {
+    (void)user_data;
+    double now = ACAP_DEVICE_Timestamp();
+
+    if (g_area_count > 0) {
+        for (int i = 0; i < g_area_count; i++) {
+            OccupancyArea* a = &g_areas[i];
+            if (!a->active || a->acc_count <= 0) continue;
+
+            cJSON* avg  = cJSON_CreateObject();
+            cJSON* item = NULL;
+            cJSON_ArrayForEach(item, a->acc_sum) {
+                double val = round(item->valuedouble / a->acc_count * 10.0) / 10.0;
+                cJSON_AddNumberToObject(avg, item->string, val);
+            }
+            publish_occupancy(a->name, avg, now);
+
+            char status_key[80];
+            snprintf(status_key, sizeof(status_key), "area_%d", a->id);
+            cJSON* entry = cJSON_CreateObject();
+            cJSON_AddStringToObject(entry, "name", a->name);
+            cJSON_AddItemToObject(entry, "counter", cJSON_Duplicate(avg, 1));
+            ACAP_STATUS_SetObject("occupancy", status_key, entry);
+            cJSON_Delete(entry);
+            cJSON_Delete(avg);
+
+            cJSON_Delete(a->acc_sum);
+            a->acc_sum   = cJSON_CreateObject();
+            a->acc_count = 0;
+        }
+    } else {
+        if (g_fallback_acc_count > 0) {
+            cJSON* avg  = cJSON_CreateObject();
+            cJSON* item = NULL;
+            cJSON_ArrayForEach(item, g_fallback_acc_sum) {
+                double val = round(item->valuedouble / g_fallback_acc_count * 10.0) / 10.0;
+                cJSON_AddNumberToObject(avg, item->string, val);
+            }
+            publish_occupancy(NULL, avg, now);
+            ACAP_STATUS_SetObject("occupancy", "counter", avg);
+            cJSON_Delete(avg);
+
+            cJSON_Delete(g_fallback_acc_sum);
+            g_fallback_acc_sum   = cJSON_CreateObject();
+            g_fallback_acc_count = 0;
+        }
+    }
+    return G_SOURCE_CONTINUE;
+}
+
 /*
  * Load / reload area definitions from settings into g_areas[].
  * Called at startup and whenever occupancy settings are saved.
@@ -833,15 +926,43 @@ static void Occupancy_Load_Areas(void) {
     for (int i = 0; i < g_area_count; i++) {
         if (g_areas[i].last_published)  { cJSON_Delete(g_areas[i].last_published);  g_areas[i].last_published  = NULL; }
         if (g_areas[i].pending_counter) { cJSON_Delete(g_areas[i].pending_counter); g_areas[i].pending_counter = NULL; }
+        if (g_areas[i].seen_labels)     { cJSON_Delete(g_areas[i].seen_labels);     g_areas[i].seen_labels     = NULL; }
+        if (g_areas[i].acc_sum)         { cJSON_Delete(g_areas[i].acc_sum);         g_areas[i].acc_sum         = NULL; }
+        g_areas[i].acc_count = 0;
     }
     g_area_count = 0;
+    /* Reset fallback state */
+    if (g_fallback_seen)    { cJSON_Delete(g_fallback_seen);    g_fallback_seen    = NULL; }
+    if (g_fallback_acc_sum) { cJSON_Delete(g_fallback_acc_sum); g_fallback_acc_sum = NULL; }
+    g_fallback_acc_count = 0;
+    /* Cancel any existing periodic timer */
+    if (g_periodic_timer_id) { g_source_remove(g_periodic_timer_id); g_periodic_timer_id = 0; }
+    g_occ_periodic = 0;
 
     cJSON* settings = ACAP_Get_Config("settings");
     if (!settings) return;
     cJSON* occupancy = cJSON_GetObjectItem(settings, "occupancy");
     if (!occupancy) return;
+
+    /* Read publish mode before processing areas */
+    {
+        cJSON* modeItem     = cJSON_GetObjectItem(occupancy, "publishMode");
+        cJSON* intervalItem = cJSON_GetObjectItem(occupancy, "periodicInterval");
+        const char* mode    = (modeItem && modeItem->valuestring) ? modeItem->valuestring : "on_change";
+        int interval_min    = (intervalItem && cJSON_IsNumber(intervalItem)) ? intervalItem->valueint : 5;
+        if (interval_min < 1) interval_min = 1;
+        g_occ_periodic     = (strcmp(mode, "periodic") == 0) ? 1 : 0;
+        g_occ_interval_sec = interval_min * 60;
+    }
+
     cJSON* areas = cJSON_GetObjectItem(occupancy, "areas");
-    if (!areas || !cJSON_IsArray(areas)) return;
+    if (!areas || !cJSON_IsArray(areas)) {
+        /* No areas — init fallback accumulator and possibly schedule periodic timer */
+        g_fallback_acc_sum = cJSON_CreateObject();
+        if (g_occ_periodic)
+            g_periodic_timer_id = g_timeout_add_seconds(g_occ_interval_sec, periodic_occupancy_cb, NULL);
+        return;
+    }
 
     int n = cJSON_GetArraySize(areas);
     if (n > MAX_AREAS) n = MAX_AREAS;
@@ -878,9 +999,21 @@ static void Occupancy_Load_Areas(void) {
             }
             a->polygon_count = pn;
         }
+        a->acc_sum   = cJSON_CreateObject();
+        a->acc_count = 0;
         g_area_count++;
     }
-    LOG("Occupancy: loaded %d active area(s)\n", g_area_count);
+
+    /* Init fallback accumulator */
+    g_fallback_acc_sum   = cJSON_CreateObject();
+    g_fallback_acc_count = 0;
+
+    /* Schedule periodic publish timer if requested */
+    if (g_occ_periodic)
+        g_periodic_timer_id = g_timeout_add_seconds(g_occ_interval_sec, periodic_occupancy_cb, NULL);
+
+    LOG_TRACE("Occupancy: loaded %d active area(s), mode=%s, interval=%ds\n",
+              g_area_count, g_occ_periodic ? "periodic" : "on_change", g_occ_interval_sec);
 }
 
 /*
@@ -907,7 +1040,8 @@ static void publish_occupancy(const char* area_name, cJSON* counter, double now)
 
 /*
  * Main occupancy processing — called each detection cycle.
- * Handles both multi-area mode and whole-frame fallback.
+ * On-change mode: publish immediately when a counter changes (with hold-down debounce).
+ * Periodic mode:  accumulate raw samples each cycle; timer callback publishes averages.
  */
 static void ProcessOccupancy(cJSON* list) {
     cJSON* settings = ACAP_Get_Config("settings");
@@ -938,23 +1072,44 @@ static void ProcessOccupancy(cJSON* list) {
                                            stationary, moving,
                                            ageThreshold, idleThreshold,
                                            a->poly_x, a->poly_y, a->polygon_count);
+            merge_with_seen(raw, &a->seen_labels);
 
-            cJSON* to_publish = apply_hold_down(raw, now, holdTime,
-                                                &a->last_published,
-                                                &a->pending_counter,
-                                                &a->decrease_due_at);
-            cJSON_Delete(raw);
-
-            if (to_publish) {
-                publish_occupancy(a->name, to_publish, now);
-                /* Update status so the UI can poll without MQTT */
+            if (g_occ_periodic) {
+                /* Accumulate raw sample for periodic averaging */
+                cJSON* item = NULL;
+                cJSON_ArrayForEach(item, raw) {
+                    cJSON* existing = cJSON_GetObjectItem(a->acc_sum, item->string);
+                    if (existing)
+                        existing->valuedouble += item->valuedouble;
+                    else
+                        cJSON_AddNumberToObject(a->acc_sum, item->string, item->valuedouble);
+                }
+                a->acc_count++;
+                /* Keep status up to date with live raw counter for UI display */
                 char status_key[80];
                 snprintf(status_key, sizeof(status_key), "area_%d", a->id);
                 cJSON* entry = cJSON_CreateObject();
                 cJSON_AddStringToObject(entry, "name", a->name);
-                cJSON_AddItemToObject(entry, "counter", cJSON_Duplicate(to_publish, 1));
+                cJSON_AddItemToObject(entry, "counter", cJSON_Duplicate(raw, 1));
                 ACAP_STATUS_SetObject("occupancy", status_key, entry);
                 cJSON_Delete(entry);
+                cJSON_Delete(raw);
+            } else {
+                cJSON* to_publish = apply_hold_down(raw, now, holdTime,
+                                                    &a->last_published,
+                                                    &a->pending_counter,
+                                                    &a->decrease_due_at);
+                cJSON_Delete(raw);
+                if (to_publish) {
+                    publish_occupancy(a->name, to_publish, now);
+                    char status_key[80];
+                    snprintf(status_key, sizeof(status_key), "area_%d", a->id);
+                    cJSON* entry = cJSON_CreateObject();
+                    cJSON_AddStringToObject(entry, "name", a->name);
+                    cJSON_AddItemToObject(entry, "counter", cJSON_Duplicate(to_publish, 1));
+                    ACAP_STATUS_SetObject("occupancy", status_key, entry);
+                    cJSON_Delete(entry);
+                }
             }
         }
     } else {
@@ -963,16 +1118,32 @@ static void ProcessOccupancy(cJSON* list) {
                                        stationary, moving,
                                        ageThreshold, idleThreshold,
                                        NULL, NULL, 0);
+        merge_with_seen(raw, &g_fallback_seen);
 
-        cJSON* to_publish = apply_hold_down(raw, now, holdTime,
-                                            &g_fallback_last,
-                                            &g_fallback_pending,
-                                            &g_fallback_due);
-        cJSON_Delete(raw);
-
-        if (to_publish) {
-            publish_occupancy(NULL, to_publish, now);
-            ACAP_STATUS_SetObject("occupancy", "counter", to_publish);
+        if (g_occ_periodic) {
+            /* Accumulate raw sample for periodic averaging */
+            cJSON* item = NULL;
+            cJSON_ArrayForEach(item, raw) {
+                cJSON* existing = cJSON_GetObjectItem(g_fallback_acc_sum, item->string);
+                if (existing)
+                    existing->valuedouble += item->valuedouble;
+                else
+                    cJSON_AddNumberToObject(g_fallback_acc_sum, item->string, item->valuedouble);
+            }
+            g_fallback_acc_count++;
+            /* Keep status up to date with live raw counter for UI display */
+            ACAP_STATUS_SetObject("occupancy", "counter", raw);
+            cJSON_Delete(raw);
+        } else {
+            cJSON* to_publish = apply_hold_down(raw, now, holdTime,
+                                                &g_fallback_last,
+                                                &g_fallback_pending,
+                                                &g_fallback_due);
+            cJSON_Delete(raw);
+            if (to_publish) {
+                publish_occupancy(NULL, to_publish, now);
+                ACAP_STATUS_SetObject("occupancy", "counter", to_publish);
+            }
         }
     }
 
@@ -1108,7 +1279,7 @@ static void Capture_And_Publish_Image(void) {
         }
     }
 
-    LOG("Capturing image %ux%u (aspect %s, rotation %u)\n", target_w, target_h, aspect, rotation);
+    LOG_TRACE("Capturing image %ux%u (aspect %s, rotation %u)\n", target_w, target_h, aspect, rotation);
 
     /* Create a one-shot JPEG stream */
     GError *error = NULL;
@@ -1199,7 +1370,7 @@ static void Schedule_Noon_Image(void) {
     int delay = noon - sec_since_midnight;
     if (delay <= 0) delay += 24 * 3600;   /* already past noon today */
     image_noon_timer_id = g_timeout_add_seconds((guint)delay, Noon_Image_Timer, NULL);
-    LOG("Next image scheduled in %d min\n", delay / 60);
+    LOG_TRACE("%s: Next image scheduled in %d min\n", __func__, delay / 60);
 }
 
 static gboolean Noon_Image_Timer(gpointer user_data) {
@@ -1286,7 +1457,7 @@ void Main_MQTT_Status(int state) {
 }
 
 void Main_MQTT_Subscription_Message(const char *topic, const char *payload) {
-    LOG("Message arrived: %s %s\n", topic, payload);
+    LOG_TRACE("Message arrived: %s %s\n", topic, payload);
 }
 
 static GMainLoop *main_loop = NULL;

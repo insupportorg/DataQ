@@ -1003,7 +1003,7 @@ int ObjectDetection_Init(ObjectDetection_Callback detections, TrackerDetection_C
     cJSON* list = VOD_Label_List();
     cJSON* labels = cJSON_CreateArray();
     if (list) {
-        LOG("%s: VOD label list has %d entries\n", __func__, cJSON_GetArraySize(list));
+        LOG_TRACE("%s: VOD label list has %d entries\n", __func__, cJSON_GetArraySize(list));
         cJSON* item = list->child;
         while(item) {
             cJSON* idItem = cJSON_GetObjectItem(item, "id");
@@ -1016,9 +1016,9 @@ int ObjectDetection_Init(ObjectDetection_Callback detections, TrackerDetection_C
         }
         cJSON_Delete(list);
     } else {
-        LOG("%s: VOD_Label_List() returned NULL\n", __func__);
+        LOG_WARN("%s: VOD_Label_List() returned NULL\n", __func__);
     }
-    LOG("%s: Storing %d labels in status\n", __func__, cJSON_GetArraySize(labels));
+    LOG_TRACE("%s: Storing %d labels in status\n", __func__, cJSON_GetArraySize(labels));
     ACAP_STATUS_SetObject("detections", "labels", labels);
     cJSON_Delete(labels);
     g_timeout_add_seconds(1, update_trackers, NULL);	
@@ -1036,9 +1036,8 @@ cJSON* ObjectDetection_Labels(void) {
     }
     cJSON* labels = cJSON_GetObjectItem(status, "labels");
     if (!labels) {
-        LOG("%s: No 'labels' item in detections status group\n", __func__);
+        LOG_WARN("%s: No 'labels' item in detections status group\n", __func__);
         return NULL;
     }
-    LOG("%s: Returning %d labels\n", __func__, cJSON_GetArraySize(labels));
     return cJSON_Duplicate(labels, 1);
 }
