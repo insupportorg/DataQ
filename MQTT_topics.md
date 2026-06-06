@@ -179,9 +179,9 @@ Every payload published via `MQTT_Publish_JSON` automatically receives three ext
   "stitched": true,
   "anomaly": "Wrong way",
   "path": [
-    { "x": 120, "y": 720, "d": 0.0, "t": 1772276395.000 },
-    { "x": 210, "y": 715, "d": 0.3, "t": 1772276396.200 },
-    { "x": 432, "y": 718, "d": 0.0, "t": 1772276398.100, "lat": 55.6034, "lon": 13.0021 }
+    { "x": 120, "y": 720, "d": 0.0, "box": { "x": 80,  "y": 620, "w": 80, "h": 200 } },
+    { "x": 210, "y": 715, "d": 0.3, "box": { "x": 170, "y": 615, "w": 80, "h": 200 } },
+    { "x": 432, "y": 718, "d": 0.0, "box": { "x": 392, "y": 618, "w": 80, "h": 200 }, "lat": 55.6034, "lon": 13.0021 }
   ],
   "serial": "B8A44F7ADD87",
   "name": "Front entrance",
@@ -207,8 +207,10 @@ Every payload published via `MQTT_Publish_JSON` automatically receives three ext
 | `hat` | String | Hat type _(optional, humans only)_ |
 | `anomaly` | String | Anomaly reason _(optional)_ |
 | `stitched` | Boolean | `true` if merged from multiple segments — **only present when stitched**, omitted otherwise |
-| `path[].x`, `.y` | Integer | Sample position in [0,1000] |
+| `path[].x`, `.y` | Integer | Sample COG position in [0,1000] |
 | `path[].d` | Float | Seconds dwelled at this position |
+| `path[].box.x`, `.y` | Integer | Bounding box top-left in [0,1000] |
+| `path[].box.w`, `.h` | Integer | Bounding box width/height in [0,1000] |
 | `path[].lat`, `.lon` | Float | Geographic coordinates _(optional, requires Geospace)_ |
 
 ---

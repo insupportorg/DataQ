@@ -95,6 +95,19 @@ static int     g_occ_periodic       = 0;     /* 0 = on_change, 1 = periodic */
 static int     g_occ_interval_sec   = 300;   /* default 5 min               */
 
 
+static void Path_Add_Box(cJSON* pos, cJSON* tracker) {
+    cJSON* bx = cJSON_GetObjectItem(tracker, "x");
+    cJSON* by = cJSON_GetObjectItem(tracker, "y");
+    cJSON* bw = cJSON_GetObjectItem(tracker, "w");
+    cJSON* bh = cJSON_GetObjectItem(tracker, "h");
+    cJSON* box = cJSON_CreateObject();
+    cJSON_AddNumberToObject(box, "x", bx ? bx->valuedouble : 0);
+    cJSON_AddNumberToObject(box, "y", by ? by->valuedouble : 0);
+    cJSON_AddNumberToObject(box, "w", bw ? bw->valuedouble : 0);
+    cJSON_AddNumberToObject(box, "h", bh ? bh->valuedouble : 0);
+    cJSON_AddItemToObject(pos, "box", box);
+}
+
 cJSON* ProcessPaths(cJSON* tracker) {
     if (!PathCache)
         PathCache = cJSON_CreateObject();
@@ -184,6 +197,7 @@ cJSON* ProcessPaths(cJSON* tracker) {
             cJSON_AddNumberToObject(pos1, "lat", round(blat * 1e6) / 1e6);
             cJSON_AddNumberToObject(pos1, "lon", round(blon * 1e6) / 1e6);
         }
+        Path_Add_Box(pos1, tracker);
         cJSON_AddItemToArray(pathArr, pos1);
 
         // Position 1: Current position (cx, cy)
@@ -201,6 +215,7 @@ cJSON* ProcessPaths(cJSON* tracker) {
             cJSON_AddNumberToObject(pos2, "lat", round(clat * 1e6) / 1e6);
             cJSON_AddNumberToObject(pos2, "lon", round(clon * 1e6) / 1e6);
         }
+        Path_Add_Box(pos2, tracker);
         cJSON_AddItemToArray(pathArr, pos2);
 
         cJSON_AddItemToObject(path, "path", pathArr);
@@ -273,6 +288,7 @@ cJSON* ProcessPaths(cJSON* tracker) {
             cJSON_AddNumberToObject(pos, "lat", round(lat * 1e6) / 1e6);
             cJSON_AddNumberToObject(pos, "lon", round(lon * 1e6) / 1e6);
         }
+        Path_Add_Box(pos, tracker);
         cJSON_AddItemToArray(pathArr, pos);
         
         // NO PreviousTimestamp cache operations needed anymore!
