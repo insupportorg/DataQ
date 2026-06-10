@@ -95,17 +95,26 @@ static int     g_occ_periodic       = 0;     /* 0 = on_change, 1 = periodic */
 static int     g_occ_interval_sec   = 300;   /* default 5 min               */
 
 
-static void Path_Add_Box(cJSON* pos, cJSON* tracker) {
-    cJSON* bx = cJSON_GetObjectItem(tracker, "x");
-    cJSON* by = cJSON_GetObjectItem(tracker, "y");
-    cJSON* bw = cJSON_GetObjectItem(tracker, "w");
-    cJSON* bh = cJSON_GetObjectItem(tracker, "h");
+/* Attach a nested "box" to a path point from the named tracker fields.
+ * The current-position box lives in x/y/w/h; the birth-position box (used for
+ * the first path point, which is anchored at bx/by) lives in bbx/bby/bbw/bbh. */
+static void Path_Add_Box_From(cJSON* pos, cJSON* tracker,
+                              const char* kx, const char* ky,
+                              const char* kw, const char* kh) {
+    cJSON* bx = cJSON_GetObjectItem(tracker, kx);
+    cJSON* by = cJSON_GetObjectItem(tracker, ky);
+    cJSON* bw = cJSON_GetObjectItem(tracker, kw);
+    cJSON* bh = cJSON_GetObjectItem(tracker, kh);
     cJSON* box = cJSON_CreateObject();
     cJSON_AddNumberToObject(box, "x", bx ? bx->valuedouble : 0);
     cJSON_AddNumberToObject(box, "y", by ? by->valuedouble : 0);
     cJSON_AddNumberToObject(box, "w", bw ? bw->valuedouble : 0);
     cJSON_AddNumberToObject(box, "h", bh ? bh->valuedouble : 0);
     cJSON_AddItemToObject(pos, "box", box);
+}
+
+static void Path_Add_Box(cJSON* pos, cJSON* tracker) {
+    Path_Add_Box_From(pos, tracker, "x", "y", "w", "h");
 }
 
 cJSON* ProcessPaths(cJSON* tracker) {
@@ -197,7 +206,7 @@ cJSON* ProcessPaths(cJSON* tracker) {
             cJSON_AddNumberToObject(pos1, "lat", round(blat * 1e6) / 1e6);
             cJSON_AddNumberToObject(pos1, "lon", round(blon * 1e6) / 1e6);
         }
-        Path_Add_Box(pos1, tracker);
+        Path_Add_Box_From(pos1, tracker, "bbx", "bby", "bbw", "bbh");
         cJSON_AddItemToArray(pathArr, pos1);
 
         // Position 1: Current position (cx, cy)
