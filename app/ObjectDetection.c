@@ -89,6 +89,7 @@ typedef struct {
     int x, y, w, h;
     int cx, cy;
     int bx, by;
+    int birth_box_x, birth_box_y, birth_box_w, birth_box_h; // bounding box snapshot at birth (matches bx/by)
     int dx, dy;
     double timestamp; // ms epoch
     double previousTimestamp; // ms epoch
@@ -307,6 +308,10 @@ static cJSON* build_tracker_json(detection_cache_entry_t *entry, int timer, bool
     cJSON_AddNumberToObject(obj, "dy", entry->dy);
     cJSON_AddNumberToObject(obj, "bx", entry->bx);
     cJSON_AddNumberToObject(obj, "by", entry->by);
+    cJSON_AddNumberToObject(obj, "bbx", entry->birth_box_x);
+    cJSON_AddNumberToObject(obj, "bby", entry->birth_box_y);
+    cJSON_AddNumberToObject(obj, "bbw", entry->birth_box_w);
+    cJSON_AddNumberToObject(obj, "bbh", entry->birth_box_h);
     cJSON_AddNumberToObject(obj, "timestamp", entry->timestamp);
     cJSON_AddNumberToObject(obj, "previousTimestamp", entry->previousTimestamp);
     cJSON_AddNumberToObject(obj, "birth", entry->birthTime);
@@ -638,6 +643,10 @@ static void VOD_Data(const vod_object_t *objects, size_t num_objects, void *user
             entry->dy = 0;
             entry->bx = cx;
             entry->by = cy;
+            entry->birth_box_x = rx;
+            entry->birth_box_y = ry;
+            entry->birth_box_w = rw;
+            entry->birth_box_h = rh;
             entry->birthTime = now;
             entry->timestamp = now;
             entry->previousTimestamp = now;
@@ -775,6 +784,10 @@ static void VOD_Data(const vod_object_t *objects, size_t num_objects, void *user
                     entry->sleep = false;
                     entry->bx = cx;
                     entry->by = cy;
+                    entry->birth_box_x = rx;
+                    entry->birth_box_y = ry;
+                    entry->birth_box_w = rw;
+                    entry->birth_box_h = rh;
                     entry->dx = 0;
                     entry->dy = 0;
                     entry->birthTime = now;

@@ -120,6 +120,7 @@ Every payload published via `MQTT_Publish_JSON` automatically receives three ext
   "distance": 12.5,
   "dx": 45, "dy": -20,
   "bx": 300, "by": 650,
+  "bbx": 260, "bby": 550, "bbw": 80, "bbh": 200,
   "active": true,
   "timestamp": 1772276400318,
   "birth": 1772276397000,
@@ -145,6 +146,7 @@ Every payload published via `MQTT_Publish_JSON` automatically receives three ext
 | `distance` | Float | Percent of 2D view traversed |
 | `dx`, `dy` | Integer | Net displacement from birth position (right/down = positive) |
 | `bx`, `by` | Integer | Birth position in [0,1000] |
+| `bbx`, `bby`, `bbw`, `bbh` | Integer | Bounding box snapshot at birth (matches `bx`/`by`); used for the first `path` point's `box` |
 | `active` | Boolean | False on final delete message |
 | `timestamp` | Float | Epoch milliseconds of this update |
 | `birth` | Float | Epoch milliseconds when first detected |
