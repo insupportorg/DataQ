@@ -726,6 +726,10 @@ static void VOD_Data(const vod_object_t *objects, size_t num_objects, void *user
                     entry->cy = cy;
                     entry->bx = cx;
                     entry->by = cy;
+                    entry->birth_box_x = rx;
+                    entry->birth_box_y = ry;
+                    entry->birth_box_w = rw;
+                    entry->birth_box_h = rh;
                     entry->dx = 0;
                     entry->dy = 0;
                     entry->birthTime = now;
