@@ -25,7 +25,14 @@
 #define LOG_TRACE(fmt, args...) {}
 
 #define IDLE_THRESHOLD_PCT 50
-#define DIRECTION_CHANGE_THRESHOLD_RAD (M_PI / 4) // 45 degrees 
+#define DIRECTION_CHANGE_THRESHOLD_RAD (M_PI / 4) // 45 degrees
+// Evict tracks that VOD has stopped reporting. VOD normally delivers a terminal
+// active=false frame, but on tracker glitches/scene changes it can simply drop an
+// object without one. Because the tracker is republished on an independent 1s timer
+// (unlike detections, which are only emitted per VOD frame), such an orphan would be
+// republished forever at frozen coordinates. If no VOD update arrives within this
+// window, treat the object as gone.
+#define STALE_TRACKER_TIMEOUT_MS 5000
 
 typedef struct {
     char name[64];
@@ -950,6 +957,28 @@ gboolean update_trackers(gpointer user_data) {
     g_hash_table_iter_init(&iter, detectionCache);
     while (g_hash_table_iter_next(&iter, &key, &value)) {
         detection_cache_entry_t *entry = (detection_cache_entry_t*)value;
+        // Stale-track reaper: VOD has not reported this object within the timeout
+        // window. Finalize it (active=false) so downstream consumers clear it, then
+        // evict it from the cache. Without this, a dropped track is republished
+        // forever at frozen coordinates until the ACAP restarts.
+        if( now - entry->timestamp > STALE_TRACKER_TIMEOUT_MS ) {
+            if( entry->valid && entry->active ) {
+                entry->active = false;
+                bool should_publish = false;
+                cJSON *death_json = build_tracker_json(entry, 0, &should_publish);
+                if (should_publish && death_json) {
+                    tracker_callback_data_t *cb_data = malloc(sizeof(tracker_callback_data_t));
+                    if (cb_data) {
+                        cb_data->payload = cJSON_Duplicate(death_json, 1);
+                        cb_data->timer = 0;
+                        pending_callbacks = g_list_prepend(pending_callbacks, cb_data);
+                    }
+                    cJSON_Delete(death_json);
+                }
+            }
+            g_hash_table_iter_remove(&iter);
+            continue;
+        }
         if( entry->active == true && now - entry->last_published_tracker > 1500 ) {
             bool should_publish = false;
             cJSON *tracker_json = build_tracker_json(entry, 1, &should_publish);
