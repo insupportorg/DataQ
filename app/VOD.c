@@ -411,8 +411,9 @@ static void detection_callback(const uint8_t *data, size_t size, void *user_data
     // 4. Increment missing_frames for objects not detected this frame
     for (object_map_entry_t *entry = g_ctx.object_map; entry; entry = entry->next) {
         tracked_object_t *track = &entry->obj;
-        if (!track->detected_this_frame) {
-            if (track->active && track->missing_frames >= 5) {
+        if (track->active && !track->detected_this_frame) {
+            track->missing_frames++;
+            if (track->missing_frames >= 5) {
                 track->active = false;
             }
         }
