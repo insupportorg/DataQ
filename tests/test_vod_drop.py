@@ -140,18 +140,35 @@ int main(void) {
     CHECK(observed_count == 1);
     expect("1", true);
 
-    // Rejected predictions and zero-score detections do not reset the grace period.
+    // Rejected predictions and zero-score detections keep a listed track alive
+    // without updating it; it expires once VOD stops listing it.
     reset();
     frame(detections, 1, NULL, 0);
+    int x = observed[0].x;
     first.detection_status = VOD__DETECTION__DETECTION_STATUS__TRACKED_UNCONFIDENT;
-    for (int i = 0; i < 5; ++i) frame(detections, 1, NULL, 0);
-    expect("1", false);
+    first.left = 0.0f;
+    for (int i = 0; i < 10; ++i) frame(detections, 1, NULL, 0);
+    expect("1", true);
+    CHECK(observed[0].x == x);
     first.detection_status = VOD__DETECTION__DETECTION_STATUS__TRACKED_CONFIDENT;
-    frame(detections, 1, NULL, 0);
     first.score = 0;
-    for (int i = 0; i < 5; ++i) frame(detections, 1, NULL, 0);
-    expect("1", false);
+    for (int i = 0; i < 10; ++i) frame(detections, 1, NULL, 0);
+    expect("1", true);
+    CHECK(observed[0].x == x);
     first.score = 90;
+    first.left = -0.5f;
+    empty_frames(4);
+    expect("1", true);
+    empty_frames(1);
+    expect("1", false);
+    CHECK(g_ctx.object_map == NULL);
+
+    // A rejected detection does not create a track.
+    reset();
+    first.detection_status = VOD__DETECTION__DETECTION_STATUS__TRACKED_UNCONFIDENT;
+    frame(detections, 1, NULL, 0);
+    CHECK(observed_count == 0 && g_ctx.object_map == NULL);
+    first.detection_status = VOD__DETECTION__DETECTION_STATUS__TRACKED_CONFIDENT;
 
     // Predictions remain eligible when that option is enabled.
     reset();

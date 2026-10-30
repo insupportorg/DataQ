@@ -48,6 +48,7 @@ typedef struct {
     size_t num_attributes;
     int missing_frames;
     bool detected_this_frame;
+    bool listed_this_frame;
 } tracked_object_t;
 
 
@@ -324,6 +325,7 @@ static void detection_callback(const uint8_t *data, size_t size, void *user_data
     // 2. Mark all objects as not detected this frame
     for (object_map_entry_t *entry = g_ctx.object_map; entry; entry = entry->next) {
         entry->obj.detected_this_frame = false;
+        entry->obj.listed_this_frame = false;
     }
 
 
@@ -332,6 +334,16 @@ static void detection_callback(const uint8_t *data, size_t size, void *user_data
         
         VOD__Detection *det = scene->detections[i];
         if (!det) continue;
+
+        // A listed id is still tracked by VOD even if the detection is rejected
+        // below, so it is not missing. Only accepted detections update the track.
+        for (object_map_entry_t *entry = g_ctx.object_map; entry; entry = entry->next) {
+            if (entry->id == det->id) {
+                entry->obj.listed_this_frame = true;
+                entry->obj.missing_frames = 0;
+            }
+        }
+
         if (det->detection_status != VOD__DETECTION__DETECTION_STATUS__TRACKED_CONFIDENT && vod_predictions==0) continue;
 
 
@@ -408,10 +420,10 @@ static void detection_callback(const uint8_t *data, size_t size, void *user_data
     }
 
 
-    // 4. Increment missing_frames for objects not detected this frame
+    // 4. Increment missing_frames for objects not listed this frame
     for (object_map_entry_t *entry = g_ctx.object_map; entry; entry = entry->next) {
         tracked_object_t *track = &entry->obj;
-        if (track->active && !track->detected_this_frame) {
+        if (track->active && !track->detected_this_frame && !track->listed_this_frame) {
             track->missing_frames++;
             if (track->missing_frames >= 5) {
                 track->active = false;
