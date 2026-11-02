@@ -29,6 +29,13 @@ static const int MAX_CONSECUTIVE_TIMEOUTS = 2;
 static bool recovery_in_progress = false;
 
 
+// Track expiry
+static const int MAX_MISSING_FRAMES = 5;             // Scenes in a row where VOD does not list the id
+static const double MAX_UNACCEPTED_SECONDS = 30.0;   // Listed by VOD, but every detection rejected
+static const double SCENE_GAP_SECONDS = 5.0;         // ObjectDetection's STALE_TRACKER_TIMEOUT_MS
+static double last_scene_time = 0;                   // Monotonic seconds
+
+
 typedef struct {
     uint32_t type_id;
     char type_name[64];
@@ -47,8 +54,8 @@ typedef struct {
     vod_tracked_attribute_t *attributes;
     size_t num_attributes;
     int missing_frames;
-    bool detected_this_frame;
     bool listed_this_frame;
+    double accepted_at;   // Monotonic seconds of the last accepted detection
 } tracked_object_t;
 
 
@@ -97,14 +104,18 @@ static void clear_object_map(void) {
 }
 
 
-// --- Get or create a tracked object by id ---
-static tracked_object_t *get_or_create_tracked(uint32_t id) {
-    object_map_entry_t *entry = g_ctx.object_map;
-    while (entry) {
+// --- Find a tracked object by id ---
+static tracked_object_t *find_tracked(uint32_t id) {
+    for (object_map_entry_t *entry = g_ctx.object_map; entry; entry = entry->next) {
         if (entry->id == id) return &entry->obj;
-        entry = entry->next;
     }
-    entry = calloc(1, sizeof(*entry));
+    return NULL;
+}
+
+
+// --- Create a tracked object for an id not in the cache ---
+static tracked_object_t *create_tracked(uint32_t id) {
+    object_map_entry_t *entry = calloc(1, sizeof(*entry));
     if (!entry) {
         LOG_WARN("Memory allocation failed for tracked object id=%u", id);
         return NULL;
@@ -306,25 +317,36 @@ static void detection_callback(const uint8_t *data, size_t size, void *user_data
     }
 
 
-    // 1. Handle DeleteOperation events
+    // 0. After a gap in scenes, ObjectDetection's stale reaper has already ended
+    // every cached object, so drop them instead of re-emitting them as active.
+    double now = g_get_monotonic_time() / 1000000.0;
+    if (last_scene_time > 0 && now - last_scene_time > SCENE_GAP_SECONDS) {
+        LOG_WARN("VOD: No scenes for %.1f seconds, clearing object cache\n", now - last_scene_time);
+        clear_object_map();
+    }
+    last_scene_time = now;
+
+
+    // 1. Handle events
     for (size_t e = 0; e < scene->n_events; ++e) {
         VOD__Event *ev = scene->events[e];
         if (!ev) continue;
         if (ev->action == VOD__EVENT_ACTION__EVENT_DELETE) {
-            tracked_object_t *track = get_or_create_tracked((uint32_t)ev->object_id);
-            if (track) {
-                track->active = false;
-                track->missing_frames = 0;
-            } else {
-                LOG_WARN("Delete event for unknown object id=%d", ev->object_id);
+            tracked_object_t *track = find_tracked((uint32_t)ev->object_id);
+            if (track) track->active = false;
+        } else if (ev->action == VOD__EVENT_ACTION__EVENT_CONNECT) {
+            // The object_ids sources are merged into object_id and are no longer listed
+            for (size_t s = 0; s < ev->n_object_ids; ++s) {
+                if (ev->object_ids[s] == ev->object_id) continue;
+                tracked_object_t *track = find_tracked((uint32_t)ev->object_ids[s]);
+                if (track) track->active = false;
             }
         }
     }
 
 
-    // 2. Mark all objects as not detected this frame
+    // 2. Mark all objects as not listed this frame
     for (object_map_entry_t *entry = g_ctx.object_map; entry; entry = entry->next) {
-        entry->obj.detected_this_frame = false;
         entry->obj.listed_this_frame = false;
     }
 
@@ -334,14 +356,15 @@ static void detection_callback(const uint8_t *data, size_t size, void *user_data
         
         VOD__Detection *det = scene->detections[i];
         if (!det) continue;
+        // Untracked detections have no track id
+        if (det->detection_status == VOD__DETECTION__DETECTION_STATUS__UNTRACKED) continue;
 
         // A listed id is still tracked by VOD even if the detection is rejected
         // below, so it is not missing. Only accepted detections update the track.
-        for (object_map_entry_t *entry = g_ctx.object_map; entry; entry = entry->next) {
-            if (entry->id == det->id) {
-                entry->obj.listed_this_frame = true;
-                entry->obj.missing_frames = 0;
-            }
+        tracked_object_t *track = find_tracked(det->id);
+        if (track) {
+            track->listed_this_frame = true;
+            track->missing_frames = 0;
         }
 
         if (det->detection_status != VOD__DETECTION__DETECTION_STATUS__TRACKED_CONFIDENT && vod_predictions==0) continue;
@@ -355,7 +378,7 @@ static void detection_callback(const uint8_t *data, size_t size, void *user_data
         }
 
 
-        tracked_object_t *track = get_or_create_tracked(det->id);
+        if (!track) track = create_tracked(det->id);
         if (!track) continue;
 
 
@@ -415,20 +438,19 @@ static void detection_callback(const uint8_t *data, size_t size, void *user_data
 
 
         track->active = true;
-        track->missing_frames = 0;
-        track->detected_this_frame = true;
+        track->listed_this_frame = true;
+        track->accepted_at = now;
     }
 
 
-    // 4. Increment missing_frames for objects not listed this frame
+    // 4. End objects VOD stopped listing, or listed without an accepted detection for too long
     for (object_map_entry_t *entry = g_ctx.object_map; entry; entry = entry->next) {
         tracked_object_t *track = &entry->obj;
-        if (track->active && !track->detected_this_frame && !track->listed_this_frame) {
+        if (!track->active) continue;
+        if (!track->listed_this_frame)
             track->missing_frames++;
-            if (track->missing_frames >= 5) {
-                track->active = false;
-            }
-        }
+        if (track->missing_frames >= MAX_MISSING_FRAMES || now - track->accepted_at >= MAX_UNACCEPTED_SECONDS)
+            track->active = false;
     }
 
 
