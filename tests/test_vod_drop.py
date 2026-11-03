@@ -12,6 +12,8 @@ functions = "\n".join(function(source, signature) for signature in (
     "static void free_tracked_object(",
     "static void clear_object_map(",
     "static object_map_entry_t *find_entry(",
+    "static int out_id_taken(",
+    "static uint32_t allocate_out_id(",
     "static tracked_object_t *create_tracked(",
     "static void remove_inactive_objects_from_cache(",
     "static void transform_bbox(",
@@ -64,16 +66,17 @@ static void frame(VOD__Detection** detections, size_t count, VOD__Event** events
 }
 // updated: an accepted detection refreshed the object in this scene
 static void expect(const char* id, bool active, bool updated) {
+    int matches = 0;
     for (size_t i = 0; i < observed_count; ++i) {
         if (strcmp(observed[i].id, id) == 0) {
+            matches++;
             CHECK(observed[i].active == active);
             CHECK(observed[i].updated == updated);
             CHECK(observed[i].confidence == 90);
             CHECK(strcmp(observed[i].class_name, "Human") == 0);
-            return;
         }
     }
-    CHECK(!"Expected object missing from callback");
+    CHECK(matches == 1);
 }
 static void empty_frames(int count) {
     for (int i = 0; i < count; ++i) frame(NULL, 0, NULL, 0);
@@ -260,9 +263,31 @@ int main(void) {
     expect("1", true, true);
     first.detection_status = VOD__DETECTION__DETECTION_STATUS__TRACKED_CONFIDENT;
 
+    // The source id is still listed in the connect scene: one continued object, not two.
+    reset();
+    vod_predictions = 0;
+    frame(detections + 1, 1, NULL, 0);
+    frame(detections, 2, merges, 1);
+    CHECK(observed_count == 1);
+    expect("2", true, true);
+
+    // A later detection that reuses the retired VOD id is a different consumer id.
+    frame(detections, 2, NULL, 0);
+    CHECK(observed_count == 2);
+    expect("2", true, true);
+    int others = 0;
+    for (size_t i = 0; i < observed_count; ++i) {
+        if (strcmp(observed[i].id, "2") == 0) continue;
+        others++;
+        CHECK(observed[i].active && observed[i].updated);
+        CHECK(strcmp(observed[i].id, "1") != 0);
+    }
+    CHECK(others == 1);
+
     clear_object_map();
     puts("PASS: missing-frame expiry, recovery, stationary detections, deletes, connects, same-scene ends, "
-         "connects into uncached targets, per-object expiry, rejected repeats, untracked and prediction filtering.");
+         "connects into uncached targets, per-object expiry, rejected repeats, untracked and prediction filtering, "
+         "connect overlap and retired-id reuse.");
     return 0;
 }
 ''')

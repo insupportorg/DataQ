@@ -98,7 +98,7 @@ Every payload published via `MQTT_Publish_JSON` automatically receives three ext
 | `age` | Float | Seconds the object has been tracked |
 | `idle` | Float | Seconds since last significant movement |
 | `active` | Boolean | True while tracked, false on delete |
-| `timestamp` | Float | Epoch milliseconds |
+| `timestamp` | Float | Epoch milliseconds of the last observation; it stays unchanged on repeats while the camera lists the object without a detection DataQ accepts, and on the final message |
 
 ---
 
