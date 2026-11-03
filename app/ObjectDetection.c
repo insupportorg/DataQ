@@ -26,9 +26,10 @@
 
 #define IDLE_THRESHOLD_PCT 50
 #define DIRECTION_CHANGE_THRESHOLD_RAD (M_PI / 4) // 45 degrees
-// Evict tracks that VOD has stopped reporting. VOD normally delivers a terminal
+// Evict tracks that VOD has stopped updating. VOD normally delivers a terminal
 // active=false frame, but on tracker glitches/scene changes it can simply drop an
-// object without one. Because the tracker is republished on an independent 1s timer
+// object without one, or keep listing it with detections that VOD.c rejects (repeated
+// with updated=false). Because the tracker is republished on an independent 1s timer
 // (unlike detections, which are only emitted per VOD frame), such an orphan would be
 // republished forever at frozen coordinates. If no VOD update arrives within this
 // window, treat the object as gone.
@@ -576,6 +577,13 @@ static void VOD_Data(const vod_object_t *objects, size_t num_objects, void *user
     for (size_t i = 0; i < num_objects; ++i) {
         const vod_object_t *obj = &objects[i];
         if (!obj || !obj->class_name) continue;
+        if (!obj->updated) {
+            // Repeated without a new observation: it can only end a cached object, and
+            // its timestamp stays at the last observation for paths and the stale reaper
+            detection_cache_entry_t *entry = (detection_cache_entry_t*)g_hash_table_lookup(detectionCache, obj->id);
+            if (entry && !obj->active) entry->active = false;
+            continue;
+        }
         int rx, ry, rw, rh;
         rotate_bbox(obj->x, obj->y, obj->w, obj->h, &rx, &ry, &rw, &rh, config_rotation);
         int cx, cy;
@@ -974,7 +982,7 @@ gboolean update_trackers(gpointer user_data) {
     g_hash_table_iter_init(&iter, detectionCache);
     while (g_hash_table_iter_next(&iter, &key, &value)) {
         detection_cache_entry_t *entry = (detection_cache_entry_t*)value;
-        // Stale-track reaper: VOD has not reported this object within the timeout
+        // Stale-track reaper: VOD has not updated this object within the timeout
         // window. Finalize it (active=false) so downstream consumers clear it, then
         // evict it from the cache. Without this, a dropped track is republished
         // forever at frozen coordinates until the ACAP restarts.

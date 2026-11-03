@@ -29,11 +29,9 @@ static const int MAX_CONSECUTIVE_TIMEOUTS = 2;
 static bool recovery_in_progress = false;
 
 
-// Track expiry
-static const int MAX_MISSING_FRAMES = 5;             // Scenes in a row where VOD does not list the id
-static const double MAX_UNACCEPTED_SECONDS = 30.0;   // Listed by VOD, but every detection rejected
-static const double SCENE_GAP_SECONDS = 5.0;         // ObjectDetection's STALE_TRACKER_TIMEOUT_MS
-static double last_scene_time = 0;                   // Monotonic seconds
+// Track expiry. Tracks listed without an accepted detection, and tracks left over
+// after a gap in scenes, are repeated with updated=false and expire in ObjectDetection.
+static const int MAX_MISSING_FRAMES = 5;   // Scenes in a row where VOD does not list the id
 
 
 typedef struct {
@@ -54,13 +52,13 @@ typedef struct {
     vod_tracked_attribute_t *attributes;
     size_t num_attributes;
     int missing_frames;
-    bool listed_this_frame;
-    double accepted_at;   // Monotonic seconds of the last accepted detection
+    bool detected_this_frame;
 } tracked_object_t;
 
 
 typedef struct object_map_entry {
-    uint32_t id;
+    uint32_t id;       // VOD track id
+    uint32_t out_id;   // Id passed to the callback; stays put when a CONNECT moves id to its target
     tracked_object_t obj;
     struct object_map_entry *next;
 } object_map_entry_t;
@@ -104,10 +102,10 @@ static void clear_object_map(void) {
 }
 
 
-// --- Find a tracked object by id ---
-static tracked_object_t *find_tracked(uint32_t id) {
+// --- Find a cached object by VOD track id ---
+static object_map_entry_t *find_entry(uint32_t id) {
     for (object_map_entry_t *entry = g_ctx.object_map; entry; entry = entry->next) {
-        if (entry->id == id) return &entry->obj;
+        if (entry->id == id) return entry;
     }
     return NULL;
 }
@@ -121,6 +119,7 @@ static tracked_object_t *create_tracked(uint32_t id) {
         return NULL;
     }
     entry->id = id;
+    entry->out_id = id;
     entry->obj.active = true;
     strncpy(entry->obj.class_name, "Unknown", sizeof(entry->obj.class_name) - 1);
     entry->obj.class_name[sizeof(entry->obj.class_name) - 1] = '\0';
@@ -317,37 +316,37 @@ static void detection_callback(const uint8_t *data, size_t size, void *user_data
     }
 
 
-    // 0. After a gap in scenes, ObjectDetection's stale reaper has already ended
-    // every cached object, so drop them instead of re-emitting them as active.
-    double now = g_get_monotonic_time() / 1000000.0;
-    if (last_scene_time > 0 && now - last_scene_time > SCENE_GAP_SECONDS) {
-        LOG_WARN("VOD: No scenes for %.1f seconds, clearing object cache\n", now - last_scene_time);
-        clear_object_map();
-    }
-    last_scene_time = now;
-
-
     // 1. Handle events
     for (size_t e = 0; e < scene->n_events; ++e) {
         VOD__Event *ev = scene->events[e];
         if (!ev) continue;
         if (ev->action == VOD__EVENT_ACTION__EVENT_DELETE) {
-            tracked_object_t *track = find_tracked((uint32_t)ev->object_id);
-            if (track) track->active = false;
+            object_map_entry_t *entry = find_entry((uint32_t)ev->object_id);
+            if (entry) entry->obj.active = false;
         } else if (ev->action == VOD__EVENT_ACTION__EVENT_CONNECT) {
-            // The object_ids sources are merged into object_id and are no longer listed
+            // The object_ids sources are merged into object_id and are no longer listed.
+            // Without a track for object_id, the first active source continues as it,
+            // keeping its out_id so the consumer sees one continuous object.
+            bool has_target = find_entry((uint32_t)ev->object_id) != NULL;
             for (size_t s = 0; s < ev->n_object_ids; ++s) {
                 if (ev->object_ids[s] == ev->object_id) continue;
-                tracked_object_t *track = find_tracked((uint32_t)ev->object_ids[s]);
-                if (track) track->active = false;
+                object_map_entry_t *source = find_entry((uint32_t)ev->object_ids[s]);
+                if (!source || !source->obj.active) continue;
+                if (has_target) {
+                    source->obj.active = false;
+                } else {
+                    source->id = (uint32_t)ev->object_id;
+                    has_target = true;
+                }
             }
         }
     }
 
 
-    // 2. Mark all objects as not listed this frame
+    // 2. Count every object as missing and not detected until this scene lists it
     for (object_map_entry_t *entry = g_ctx.object_map; entry; entry = entry->next) {
-        entry->obj.listed_this_frame = false;
+        entry->obj.missing_frames++;
+        entry->obj.detected_this_frame = false;
     }
 
 
@@ -359,27 +358,27 @@ static void detection_callback(const uint8_t *data, size_t size, void *user_data
         // Untracked detections have no track id
         if (det->detection_status == VOD__DETECTION__DETECTION_STATUS__UNTRACKED) continue;
 
-        // A listed id is still tracked by VOD even if the detection is rejected
-        // below, so it is not missing. Only accepted detections update the track.
-        tracked_object_t *track = find_tracked(det->id);
-        if (track) {
-            track->listed_this_frame = true;
-            track->missing_frames = 0;
-        }
 
-        if (det->detection_status != VOD__DETECTION__DETECTION_STATUS__TRACKED_CONFIDENT && vod_predictions==0) continue;
-
-
-        bool valid_class = (det->det_class >= 0) && (det->det_class < g_ctx.num_classes);
-        bool valid_score = (det->score > 0);
-        if (!valid_class || !valid_score) {
-            LOG_WARN("Skipping detection id=%u: invalid class_id=%d or score=%u", det->id, det->det_class, det->score);
-            continue;
+        bool accepted = det->detection_status == VOD__DETECTION__DETECTION_STATUS__TRACKED_CONFIDENT || vod_predictions;
+        if (accepted) {
+            bool valid_class = (det->det_class >= 0) && (det->det_class < g_ctx.num_classes);
+            bool valid_score = (det->score > 0);
+            if (!valid_class || !valid_score) {
+                LOG_WARN("Skipping detection id=%u: invalid class_id=%d or score=%u", det->id, det->det_class, det->score);
+                accepted = false;
+            }
         }
 
 
-        if (!track) track = create_tracked(det->id);
-        if (!track) continue;
+        // A listed id is still tracked by VOD even if its detection is rejected, so it
+        // is not missing. Only accepted detections create or update a track, and a
+        // track ended by an event in this scene stays ended.
+        object_map_entry_t *entry = find_entry(det->id);
+        tracked_object_t *track = entry ? &entry->obj : NULL;
+        if (!track && accepted) track = create_tracked(det->id);
+        if (!track || !track->active) continue;
+        track->missing_frames = 0;
+        if (!accepted) continue;
 
 
         track->confidence = det->score;
@@ -437,20 +436,13 @@ static void detection_callback(const uint8_t *data, size_t size, void *user_data
         }
 
 
-        track->active = true;
-        track->listed_this_frame = true;
-        track->accepted_at = now;
+        track->detected_this_frame = true;
     }
 
 
-    // 4. End objects VOD stopped listing, or listed without an accepted detection for too long
+    // 4. End objects VOD has stopped listing
     for (object_map_entry_t *entry = g_ctx.object_map; entry; entry = entry->next) {
-        tracked_object_t *track = &entry->obj;
-        if (!track->active) continue;
-        if (!track->listed_this_frame)
-            track->missing_frames++;
-        if (track->missing_frames >= MAX_MISSING_FRAMES || now - track->accepted_at >= MAX_UNACCEPTED_SECONDS)
-            track->active = false;
+        if (entry->obj.missing_frames >= MAX_MISSING_FRAMES) entry->obj.active = false;
     }
 
 
@@ -476,7 +468,7 @@ static void detection_callback(const uint8_t *data, size_t size, void *user_data
         for (object_map_entry_t *entry = g_ctx.object_map; entry; entry = entry->next) {
             tracked_object_t *track = &entry->obj;
             vod_object_t *obj = &out_objs[out_count++];
-            snprintf(obj->id, sizeof(obj->id), "%u", entry->id);
+            snprintf(obj->id, sizeof(obj->id), "%u", entry->out_id);
             obj->confidence = track->confidence;
             obj->type = track->type;
             if (track->class_name && strlen(track->class_name) > 0) {
@@ -491,6 +483,7 @@ static void detection_callback(const uint8_t *data, size_t size, void *user_data
             obj->w = track->w;
             obj->h = track->h;
             obj->active = track->active;
+            obj->updated = track->detected_this_frame;
             obj->num_attributes = track->num_attributes;
             if (obj->num_attributes > 0) {
                 obj->attributes = calloc(obj->num_attributes, sizeof(vod_attribute_t));

@@ -148,7 +148,7 @@ Every payload published via `MQTT_Publish_JSON` automatically receives three ext
 | `bx`, `by` | Integer | Birth position in [0,1000] |
 | `bbx`, `bby`, `bbw`, `bbh` | Integer | Bounding box snapshot at birth (matches `bx`/`by`); used for the first `path` point's `box` |
 | `active` | Boolean | False on final delete message |
-| `timestamp` | Float | Epoch milliseconds of this update |
+| `timestamp` | Float | Epoch milliseconds of the last observation; it stays unchanged on repeats while the camera lists the object without a detection DataQ accepts, and on the final message |
 | `birth` | Float | Epoch milliseconds when first detected |
 | `color` | String | Primary color label _(optional)_ |
 | `color2` | String | Secondary color label _(optional)_ |

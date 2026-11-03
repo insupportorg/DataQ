@@ -4,22 +4,26 @@ Requires Python 3 and cc/gcc/clang, or cl in a Visual Studio developer shell.
 The camera SDK is not needed; hardware interfaces are supplied by each harness.
 """
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
 APP = ROOT / "app"
+# Braces, plus the literals and comments whose braces must not be counted
+TOKEN = re.compile(r'"(?:\\.|[^"\\\n])*"|\'(?:\\.|[^\'\\\n])*\'|//[^\n]*|/\*.*?\*/|[{}]', re.S)
 
 
 def function(source, signature):
-    start = source.index(signature)
-    opening = source.index("{", start)
-    depth, end = 1, opening + 1
+    # A definition reaches its "{" before any ";", which skips prototypes
+    definition = re.search(re.escape(signature) + r"[^;{]*\{", source)
+    depth, end = 1, definition.end()
     while depth:
-        depth += (source[end] == "{") - (source[end] == "}")
-        end += 1
-    return source[start:end]
+        token = TOKEN.search(source, end)
+        depth += (token.group() == "{") - (token.group() == "}")
+        end = token.end()
+    return source[definition.start():end]
 
 
 def run(code, sources=()):
