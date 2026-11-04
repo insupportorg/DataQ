@@ -26,12 +26,10 @@
 
 #define IDLE_THRESHOLD_PCT 50
 #define DIRECTION_CHANGE_THRESHOLD_RAD (M_PI / 4) // 45 degrees
-// Evict tracks that VOD has stopped reporting. VOD normally delivers a terminal
-// active=false frame, but on tracker glitches/scene changes it can simply drop an
-// object without one. Because the tracker is republished on an independent 1s timer
-// (unlike detections, which are only emitted per VOD frame), such an orphan would be
-// republished forever at frozen coordinates. If no VOD update arrives within this
-// window, treat the object as gone.
+// Evict a track only after scenes stop mentioning its id. A listed repeat
+// (updated=false) keeps the same identity: timestamp stays at the last accepted
+// observation, while last_listed proves the camera still has the id. The 1s tracker
+// republish would otherwise hold an orphan forever if VOD dropped it with no terminal.
 #define STALE_TRACKER_TIMEOUT_MS 5000
 
 typedef struct {
@@ -91,7 +89,8 @@ typedef struct {
     int bx, by;
     int birth_box_x, birth_box_y, birth_box_w, birth_box_h; // bounding box snapshot at birth (matches bx/by)
     int dx, dy;
-    double timestamp; // ms epoch
+    double timestamp; // ms epoch of the last accepted observation
+    double last_listed; // ms epoch of the last scene that mentioned this id
     double previousTimestamp; // ms epoch
     double birthTime; // ms epoch
     int prev_cx, prev_cy;
@@ -148,6 +147,21 @@ static double get_epoch_ms() {
     struct timespec ts;
     clock_gettime(CLOCK_REALTIME, &ts);
     return (double)(ts.tv_sec * 1000 + ts.tv_nsec / 1000000);
+}
+
+// The camera still lists this id, but this scene added no accepted detection.
+// Keep the identity and the observation timestamp; let age and idle cover the hold.
+static void note_listed_repeat(detection_cache_entry_t *entry, double now) {
+    entry->last_listed = now;
+    entry->age = round(10.0 * ((now - entry->birthTime) / 1000.0)) / 10.0;
+    entry->idle = true;
+    entry->idle_duration = (now - entry->idle_start_time) / 1000.0;
+    if (entry->idle_duration > entry->max_idle_duration)
+        entry->max_idle_duration = floor((entry->idle_duration * 10) + 0.5) / 10.0;
+}
+
+static int tracker_is_stale(const detection_cache_entry_t *entry, double now) {
+    return now - entry->last_listed > STALE_TRACKER_TIMEOUT_MS;
 }
 
 static void free_attributes(GHashTable *attrs) {
@@ -576,6 +590,16 @@ static void VOD_Data(const vod_object_t *objects, size_t num_objects, void *user
     for (size_t i = 0; i < num_objects; ++i) {
         const vod_object_t *obj = &objects[i];
         if (!obj || !obj->class_name) continue;
+        if (!obj->updated) {
+            // Repeated without a new observation. A listed id stays the same track.
+            // timestamp stays at the last accepted observation; a real terminal ends it.
+            detection_cache_entry_t *entry = (detection_cache_entry_t*)g_hash_table_lookup(detectionCache, obj->id);
+            if (entry) {
+                note_listed_repeat(entry, now);
+                if (!obj->active) entry->active = false;
+            }
+            continue;
+        }
         int rx, ry, rw, rh;
         rotate_bbox(obj->x, obj->y, obj->w, obj->h, &rx, &ry, &rw, &rh, config_rotation);
         int cx, cy;
@@ -649,6 +673,7 @@ static void VOD_Data(const vod_object_t *objects, size_t num_objects, void *user
             entry->birth_box_h = rh;
             entry->birthTime = now;
             entry->timestamp = now;
+            entry->last_listed = now;
             entry->previousTimestamp = now;
             entry->prev_cx = cx;
             entry->prev_cy = cy;
@@ -734,6 +759,7 @@ static void VOD_Data(const vod_object_t *objects, size_t num_objects, void *user
                     entry->dy = 0;
                     entry->birthTime = now;
                     entry->timestamp = now;
+                    entry->last_listed = now;
                     entry->previousTimestamp = now;
                     entry->prev_cx = cx;
                     entry->prev_cy = cy;
@@ -827,6 +853,7 @@ static void VOD_Data(const vod_object_t *objects, size_t num_objects, void *user
             }
             entry->confidence = obj->confidence;
             entry->timestamp = now;
+            entry->last_listed = now;
             entry->x = rx;
             entry->y = ry;
             entry->w = rw;
@@ -974,12 +1001,13 @@ gboolean update_trackers(gpointer user_data) {
     g_hash_table_iter_init(&iter, detectionCache);
     while (g_hash_table_iter_next(&iter, &key, &value)) {
         detection_cache_entry_t *entry = (detection_cache_entry_t*)value;
-        // Stale-track reaper: VOD has not reported this object within the timeout
-        // window. Finalize it (active=false) so downstream consumers clear it, then
-        // evict it from the cache. Without this, a dropped track is republished
-        // forever at frozen coordinates until the ACAP restarts.
-        if( now - entry->timestamp > STALE_TRACKER_TIMEOUT_MS ) {
+        // Stale-track reaper: no scene has mentioned this id within the timeout.
+        // Finalize it (active=false) so downstream consumers clear it, then evict it.
+        // A listed repeat refreshes last_listed, so a camera that still has the id
+        // does not die here and come back as a new birth.
+        if (tracker_is_stale(entry, now)) {
             if( entry->valid && entry->active ) {
+                note_listed_repeat(entry, now);
                 entry->active = false;
                 bool should_publish = false;
                 cJSON *death_json = build_tracker_json(entry, 0, &should_publish);

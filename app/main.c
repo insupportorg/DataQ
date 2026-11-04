@@ -313,10 +313,14 @@ cJSON* ProcessPaths(cJSON* tracker) {
         int pathLen = cJSON_GetArraySize(pathArr);
 
         if (pathLen > 1) {
-            // FIX #1: Calculate LAST position's duration
-            // This is the final position where object was when it exited
+            // The published timestamp stays at the last observation. The final
+            // point's duration runs through this exit, covering a hold or the
+            // wait until the reaper decides the id is gone.
             cJSON* last = cJSON_GetArrayItem(pathArr, pathLen - 1);
-            double finalDuration = (currentTimestamp - previousTimestamp) / 1000.0; // Convert ms to seconds
+            double exit_ms = ACAP_DEVICE_Timestamp();
+            if (exit_ms < currentTimestamp) exit_ms = currentTimestamp;
+            double finalDuration = (exit_ms - previousTimestamp) / 1000.0;
+            if (finalDuration < 0) finalDuration = 0;
             cJSON_ReplaceItemInObject(last, "d", cJSON_CreateNumber(finalDuration));
 
             // Calculate final dwell = max time spent at any single sampled position

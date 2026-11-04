@@ -23,6 +23,7 @@ typedef struct {
     vod_attribute_t *attributes; // Array of attributes (type/value pairs)
     size_t num_attributes;
     bool active;        // True if tracked, false if deleted
+    bool updated;       // True if a detection was accepted this scene, false if repeated unchanged
 } vod_object_t;
 
 // Callback signature: called with list of current objects
