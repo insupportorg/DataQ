@@ -127,16 +127,42 @@ static int config_min_height = 10;
 static int config_max_height = 800;
 static int config_min_width = 10;
 static int config_max_width = 800;
-static int config_x1 = 0;
-static int config_x2 = 1000;
-static int config_y1 = 0;
-static int config_y2 = 1000;
 static int config_hanging_objects = 0;
 static int config_cutoff_active = 0;   // 0 = disabled, 1 = enabled
 static int config_cutoff_x1 = 50;
 static int config_cutoff_y1 = 50;
 static int config_cutoff_x2 = 950;
 static int config_cutoff_y2 = 950;
+
+/* ── Polygon AOI and Exclusion Zones ─────────────────────────────── */
+typedef struct { int x, y; } od_poly_pt_t;
+
+#define OD_MAX_POLY_PTS    32
+#define OD_MAX_EXCLUSIONS   8
+
+static od_poly_pt_t config_aoi_pts[OD_MAX_POLY_PTS];
+static int          config_aoi_n = 0;   /* 0 = no AOI filter (full frame) */
+
+typedef struct {
+    od_poly_pt_t pts[OD_MAX_POLY_PTS];
+    int          n;
+} od_exclusion_t;
+
+static od_exclusion_t config_exclusions[OD_MAX_EXCLUSIONS];
+static int            config_exclusion_count = 0;
+
+/* Ray-casting PIP test in 0-1000 canvas space */
+static int od_point_in_poly(int px, int py, const od_poly_pt_t *pts, int n) {
+    int inside = 0;
+    for (int i = 0, j = n - 1; i < n; j = i++) {
+        int xi = pts[i].x, yi = pts[i].y;
+        int xj = pts[j].x, yj = pts[j].y;
+        if (((yi > py) != (yj > py)) &&
+            (px < (xj - xi) * (py - yi) / (yj - yi) + xi))
+            inside = !inside;
+    }
+    return inside;
+}
 
 static cJSON* config_blacklist = 0;
 
@@ -269,12 +295,71 @@ void ObjectDetection_Config(cJSON* data) {
     } else {
         config_cutoff_active = 0;
     }
-    cJSON *aoi = cJSON_GetObjectItem(data, "aoi");
-    if (aoi) {
-        config_x1 = cJSON_GetObjectItem(aoi, "x1") ? cJSON_GetObjectItem(aoi, "x1")->valueint : 0;
-        config_x2 = cJSON_GetObjectItem(aoi, "x2") ? cJSON_GetObjectItem(aoi, "x2")->valueint : 1000;
-        config_y1 = cJSON_GetObjectItem(aoi, "y1") ? cJSON_GetObjectItem(aoi, "y1")->valueint : 0;
-        config_y2 = cJSON_GetObjectItem(aoi, "y2") ? cJSON_GetObjectItem(aoi, "y2")->valueint : 1000;
+
+    /* ── Polygon AOI ──────────────────────────────────────────────── */
+    config_aoi_n = 0;
+    cJSON *aoi_poly = cJSON_GetObjectItem(data, "aoi_polygon");
+    if (aoi_poly && cJSON_IsArray(aoi_poly)) {
+        int n = cJSON_GetArraySize(aoi_poly);
+        if (n > OD_MAX_POLY_PTS) n = OD_MAX_POLY_PTS;
+        for (int i = 0; i < n; i++) {
+            cJSON *pt = cJSON_GetArrayItem(aoi_poly, i);
+            if (!pt) continue;
+            cJSON *xi = cJSON_GetObjectItem(pt, "x");
+            cJSON *yi = cJSON_GetObjectItem(pt, "y");
+            config_aoi_pts[i].x = xi ? xi->valueint : 0;
+            config_aoi_pts[i].y = yi ? yi->valueint : 0;
+        }
+        config_aoi_n = n;
+    }
+    /* Backward compat: convert old rectangle AOI to polygon if no polygon set */
+    if (config_aoi_n < 3) {
+        config_aoi_n = 0;
+        cJSON *aoi = cJSON_GetObjectItem(data, "aoi");
+        if (aoi) {
+            int x1 = cJSON_GetObjectItem(aoi,"x1") ? cJSON_GetObjectItem(aoi,"x1")->valueint : 0;
+            int y1 = cJSON_GetObjectItem(aoi,"y1") ? cJSON_GetObjectItem(aoi,"y1")->valueint : 0;
+            int x2 = cJSON_GetObjectItem(aoi,"x2") ? cJSON_GetObjectItem(aoi,"x2")->valueint : 1000;
+            int y2 = cJSON_GetObjectItem(aoi,"y2") ? cJSON_GetObjectItem(aoi,"y2")->valueint : 1000;
+            /* Only set if it restricts anything */
+            if (!(x1 <= 0 && y1 <= 0 && x2 >= 1000 && y2 >= 1000)) {
+                config_aoi_pts[0].x = x1; config_aoi_pts[0].y = y1;
+                config_aoi_pts[1].x = x2; config_aoi_pts[1].y = y1;
+                config_aoi_pts[2].x = x2; config_aoi_pts[2].y = y2;
+                config_aoi_pts[3].x = x1; config_aoi_pts[3].y = y2;
+                config_aoi_n = 4;
+            }
+        }
+    }
+
+    /* ── Exclusion Zones ──────────────────────────────────────────── */
+    config_exclusion_count = 0;
+    cJSON *exclusions = cJSON_GetObjectItem(data, "exclusions");
+    if (exclusions && cJSON_IsArray(exclusions)) {
+        int ne = cJSON_GetArraySize(exclusions);
+        if (ne > OD_MAX_EXCLUSIONS) ne = OD_MAX_EXCLUSIONS;
+        for (int i = 0; i < ne; i++) {
+            cJSON *zone = cJSON_GetArrayItem(exclusions, i);
+            if (!zone) continue;
+            cJSON *activeItem = cJSON_GetObjectItem(zone, "active");
+            if (activeItem && !cJSON_IsTrue(activeItem)) continue;
+            cJSON *poly = cJSON_GetObjectItem(zone, "polygon");
+            if (!poly || !cJSON_IsArray(poly)) continue;
+            int np = cJSON_GetArraySize(poly);
+            if (np < 3) continue;
+            if (np > OD_MAX_POLY_PTS) np = OD_MAX_POLY_PTS;
+            od_exclusion_t *ex = &config_exclusions[config_exclusion_count];
+            ex->n = np;
+            for (int j = 0; j < np; j++) {
+                cJSON *pt = cJSON_GetArrayItem(poly, j);
+                if (!pt) continue;
+                cJSON *xi = cJSON_GetObjectItem(pt, "x");
+                cJSON *yi = cJSON_GetObjectItem(pt, "y");
+                ex->pts[j].x = xi ? xi->valueint : 0;
+                ex->pts[j].y = yi ? yi->valueint : 0;
+            }
+            config_exclusion_count++;
+        }
     }
 /*	
     cJSON *significantMovement = cJSON_GetObjectItem(data, "significantMovement");
@@ -635,8 +720,18 @@ static void VOD_Data(const vod_object_t *objects, size_t num_objects, void *user
         }
         bool valid = true;
         if (obj->confidence < config_min_confidence) valid = false;
-        if (cx < config_x1 || cx > config_x2) valid = false;
-        if (cy < config_y1 || cy > config_y2) valid = false;
+        /* Polygon AOI: if defined, center must be inside */
+        if (valid && config_aoi_n >= 3 && !od_point_in_poly(cx, cy, config_aoi_pts, config_aoi_n))
+            valid = false;
+        /* Exclusion zones: center must NOT be inside any active exclusion zone */
+        if (valid) {
+            for (int ez = 0; ez < config_exclusion_count; ez++) {
+                if (od_point_in_poly(cx, cy, config_exclusions[ez].pts, config_exclusions[ez].n)) {
+                    valid = false;
+                    break;
+                }
+            }
+        }
         if (rw < 5 || rh < 5) valid = false;
         if (ObjectDetection_Blacklisted(obj->class_name)) valid = false;
         if (rw < config_min_width || rh < config_min_height) valid = false;
